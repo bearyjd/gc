@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gc"
+version = "0.1.0"
+description = "GameChanger team schedule & clips CLI scraper"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+gc = "gc_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gc_cli*"]
