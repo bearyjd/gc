@@ -7,6 +7,7 @@ Usage:
     gc summary   [--team ID] [--json]           — schedule + clips in one shot
     gc sync      [--team ID] [--calendar ID]    — sync schedule to Google Calendar via gog
                  [--dry-run] [--visible]
+    gc token-refresh  [--visible]               — refresh gc-token via saved browser context
 """
 
 import argparse
@@ -25,7 +26,13 @@ from gc_cli.client import (
     GC_DIR,
     TEAMS_PATH,
 )
-from gc_cli.session import get_session
+from gc_cli.session import (
+    get_session,
+    _try_context_login,
+    _get_credentials,
+    _playwright_login,
+    _update_env_token,
+)
 from gc_cli.sync import sync_team, SyncResult
 
 
@@ -191,6 +198,36 @@ def cmd_sync(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_token_refresh(args: argparse.Namespace) -> None:
+    """Refresh gc-token using the saved Playwright browser context.
+
+    Restores ~/.gc/sessions/playwright_context.json, navigates to GC to
+    trigger API calls, captures a fresh gc-token JWT, and writes it back
+    to ~/.gc/.env.  Avoids OTP because the existing browser session cookies
+    are reused.  Falls back to a full Playwright login if the context is
+    missing or stale.
+    """
+    visible = getattr(args, "visible", False)
+
+    session = _try_context_login(verbose=True)
+    if session:
+        token = session.headers.get("gc-token", "")
+        device_id = session.headers.get("gc-device-id") or None
+        _update_env_token(token, device_id)
+        print("  Token refreshed via saved browser context", file=sys.stderr)
+        return
+
+    # Saved context missing/stale — fall back to full Playwright login
+    print("  No saved context found — running full Playwright login...", file=sys.stderr)
+    print("  (Use --visible if an OTP prompt appears)", file=sys.stderr)
+    email, password = _get_credentials()
+    session = _playwright_login(email, password, visible=visible)
+    token = session.headers.get("gc-token", "")
+    device_id = session.headers.get("gc-device-id") or None
+    _update_env_token(token, device_id)
+    print("  Token refreshed via full login, browser context saved", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -226,6 +263,18 @@ def main() -> None:
     sp_sync.add_argument("--dry-run", action="store_true", help="Show planned changes without calling gog")
     sp_sync.add_argument("--visible", action="store_true", help="Run Playwright in headed mode (debug Cloudflare)")
     sp_sync.set_defaults(func=cmd_sync)
+
+    # gc token-refresh
+    sp_refresh = subparsers.add_parser(
+        "token-refresh",
+        help="Refresh gc-token via saved browser context (no OTP)",
+    )
+    sp_refresh.add_argument(
+        "--visible",
+        action="store_true",
+        help="Open browser window (needed for OTP on first-time login)",
+    )
+    sp_refresh.set_defaults(func=cmd_token_refresh)
 
     args = parser.parse_args()
     if not args.command:

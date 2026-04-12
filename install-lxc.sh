@@ -56,7 +56,22 @@ else
 fi
 
 # ---------------------------------------------------------------
-# 4. Smoke test
+# 4. Install systemd token-refresh timer
+# ---------------------------------------------------------------
+if [[ -d /opt/gc/systemd ]]; then
+    log "Installing gc-token-refresh systemd units..."
+    cp /opt/gc/systemd/gc-token-refresh.service /etc/systemd/system/
+    cp /opt/gc/systemd/gc-token-refresh.timer   /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable --now gc-token-refresh.timer
+    log "  Timer enabled — gc-token-refresh fires every 45 min"
+    log "  Status: $(systemctl is-active gc-token-refresh.timer)"
+else
+    log "WARN: /opt/gc/systemd not found — skipping timer install"
+fi
+
+# ---------------------------------------------------------------
+# 5. Smoke test
 # ---------------------------------------------------------------
 log "Running smoke test: gc teams --json..."
 if [[ -f ~/.gc/.env ]] && gc teams --json > /dev/null 2>&1; then
@@ -89,3 +104,4 @@ log "Next steps:"
 log "  1. Create ~/.gc/.env with GC_TOKEN"
 log "  2. Run: gc teams --json > ~/.gc/teams.json"
 log "  3. Add cron: 0 6 * * * /opt/gc/cron/gc-cron.sh 2>/tmp/gc-cron.log"
+log "  Note: gc-token-refresh.timer refreshes your token every 45 min automatically"

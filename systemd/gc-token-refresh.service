@@ -1,0 +1,10 @@
+[Unit]
+Description=GameChanger token refresh
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/gc token-refresh
+StandardOutput=journal
+StandardError=journal

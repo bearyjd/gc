@@ -283,6 +283,40 @@ def _playwright_login(
     return session
 
 
+def _update_env_token(token: str, device_id: str | None = None) -> None:
+    """Write a fresh gc-token (and optionally gc-device-id) into ~/.gc/.env.
+
+    Preserves all other lines. Creates the file if it doesn't exist.
+    """
+    env_path = GC_DIR / ".env"
+    GC_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    lines: list[str] = []
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+
+    def _set(key: str, value: str, rows: list[str]) -> list[str]:
+        """Replace existing key=value or append if not found."""
+        new_line = f'{key}="{value}"'
+        for i, row in enumerate(rows):
+            stripped = row.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            k = stripped.split("=", 1)[0].strip()
+            if k == key:
+                rows[i] = new_line
+                return rows
+        rows.append(new_line)
+        return rows
+
+    lines = _set("GC_TOKEN", token, lines)
+    if device_id:
+        lines = _set("GC_DEVICE_ID", device_id, lines)
+
+    env_path.write_text("\n".join(lines) + "\n")
+    env_path.chmod(0o600)
+
+
 def _token_from_env() -> tuple[str | None, str | None]:
     """Return (GC_TOKEN, GC_DEVICE_ID) from env or ~/.gc/.env."""
     token = os.environ.get("GC_TOKEN")

@@ -1,0 +1,11 @@
+[Unit]
+Description=GameChanger token refresh every 45 minutes
+Requires=gc-token-refresh.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

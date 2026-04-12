@@ -53,6 +53,7 @@ gc schedule  [--team ID] [--json]           # upcoming schedule
 gc summary   [--team ID] [--json]           # schedule + clips in one shot
 gc sync      [--team ID] [--calendar ID]    # sync schedule to Google Calendar
              [--dry-run] [--visible]
+gc token-refresh  [--visible]               # refresh gc-token via saved browser context
 ```
 
 All commands accept `--json` for machine-readable output.
@@ -79,6 +80,12 @@ gc sync
 
 # Sync with dry-run (see what would change without calling gog)
 gc sync --dry-run
+
+# Refresh gc-token using saved browser context (no OTP)
+gc token-refresh
+
+# First-time token capture with browser window visible (handles OTP once)
+gc token-refresh --visible
 
 # Sync a specific team to a specific calendar
 gc sync --team abc123 --calendar your-id@group.calendar.google.com
@@ -117,6 +124,37 @@ gc summary --json
   sessions/
     playwright_context.json  # saved browser state — restores login without OTP (auto-managed)
     *.json                   # per-email session cache (60-min TTL)
+```
+
+## Token Keep-Alive (systemd timer)
+
+`gc-token` is a short-lived JWT. The systemd timer refreshes it every 45 minutes
+by restoring the saved Playwright browser context — the same way your real browser
+silently renews its session. No OTP required after the first login.
+
+### Install on LXC
+
+```bash
+# Installs gc, clones repo, and enables the timer in one shot
+ssh root@<LXC_IP> 'bash -s' < install-lxc.sh
+```
+
+### First-time setup (one-time OTP)
+
+If you have no saved browser context yet, do one headed login to handle the OTP:
+
+```bash
+gc token-refresh --visible
+```
+
+After that, the timer keeps the session alive indefinitely.
+
+### Manual check
+
+```bash
+systemctl status gc-token-refresh.timer
+systemctl list-timers gc-token-refresh.timer
+journalctl -u gc-token-refresh.service -n 20
 ```
 
 ## Cron (Multiple Teams)
