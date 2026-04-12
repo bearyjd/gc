@@ -124,14 +124,18 @@ def _playwright_login(
                 cookie["name"], cookie["value"], domain=cookie.get("domain", "")
             )
 
-        # Extract bearer token from localStorage if available
+        # Extract gc-token from localStorage if available
         token = page.evaluate(
-            "() => localStorage.getItem('authToken') || "
+            "() => localStorage.getItem('gc-token') || "
+            "localStorage.getItem('authToken') || "
             "localStorage.getItem('auth_token') || "
             "localStorage.getItem('token')"
         )
         if token:
-            session.headers.update({"Authorization": f"Bearer {token}"})
+            session.headers.update({
+                "gc-token": token,
+                "gc-app-name": "web",
+            })
 
         browser.close()
 
@@ -171,7 +175,8 @@ def get_session(verbose: bool = True, visible: bool = False) -> requests.Session
             print("  Using GC_TOKEN from env", file=sys.stderr)
         session = requests.Session()
         session.headers.update({
-            "Authorization": f"Bearer {token}",
+            "gc-token": token,
+            "gc-app-name": "web",
             "Accept": "application/json",
         })
         return session
