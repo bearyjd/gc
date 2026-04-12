@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,17 +36,18 @@ jobs:
           github.event_name == 'push' &&
           github.actor != 'github-actions[bot]'
         run: |
-          NEW_VERSION=$(python3 - <<'EOF'
+          python3 -c "
           import re, pathlib
-          p = pathlib.Path("pyproject.toml")
+          p = pathlib.Path('pyproject.toml')
           text = p.read_text()
-          m = re.search(r'version = "(\d+\.\d+\.)(\d+)"', text)
+          m = re.search(r'version = \"(\d+\.\d+\.)(\d+)\"', text)
           new_patch = int(m.group(2)) + 1
           new_version = m.group(1) + str(new_patch)
-          p.write_text(text[:m.start()] + f'version = "{new_version}"' + text[m.end():])
-          print(new_version, end="")
-          EOF
-          )
+          p.write_text(text[:m.start()] + f'version = \"{new_version}\"' + text[m.end():])
+          with open('VERSION_NEW', 'w') as f: f.write(new_version)
+          "
+          NEW_VERSION=$(cat VERSION_NEW)
+          rm VERSION_NEW
           echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
 
       - name: Commit and tag version bump
