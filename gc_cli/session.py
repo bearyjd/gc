@@ -61,20 +61,19 @@ def _load_cached_session(email: str) -> requests.Session | None:
         return None
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+        cached_at = datetime.fromisoformat(data["cached_at"])
+        if datetime.now() - cached_at > timedelta(minutes=SESSION_TTL_MINUTES):
+            return None
 
-    cached_at = datetime.fromisoformat(data["cached_at"])
-    if datetime.now() - cached_at > timedelta(minutes=SESSION_TTL_MINUTES):
+        session = requests.Session()
+        session.headers.update(data.get("headers", {}))
+        for cookie in data.get("cookies", []):
+            session.cookies.set(
+                cookie["name"], cookie["value"], domain=cookie.get("domain", "")
+            )
+        return session
+    except (json.JSONDecodeError, OSError, KeyError, ValueError):
         return None
-
-    session = requests.Session()
-    session.headers.update(data.get("headers", {}))
-    for cookie in data.get("cookies", []):
-        session.cookies.set(
-            cookie["name"], cookie["value"], domain=cookie.get("domain", "")
-        )
-    return session
 
 
 def _save_session(email: str, session: requests.Session, cookies: list[dict]) -> None:
@@ -137,7 +136,7 @@ def _playwright_login(
 
 def get_session(verbose: bool = True, visible: bool = False) -> requests.Session:
     """Return an authenticated requests.Session. Uses cache if TTL valid."""
-    email, _ = _get_credentials()
+    email, password = _get_credentials()
 
     cached = _load_cached_session(email)
     if cached:
@@ -148,7 +147,6 @@ def get_session(verbose: bool = True, visible: bool = False) -> requests.Session
     if verbose:
         print("  Logging in via Playwright...", file=sys.stderr)
 
-    _, password = _get_credentials()
     session, raw_cookies = _playwright_login(email, password, visible=visible)
     _save_session(email, session, raw_cookies)
 
