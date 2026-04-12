@@ -19,6 +19,7 @@ GC_EMAIL="you@example.com"
 GC_PASSWORD="yourpassword"
 GC_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
 # GOG_ACCOUNT="you@gmail.com"
+# GC_TOKEN="your-bearer-token"  # Alternative if MFA is required (skips Playwright)
 EOF
 chmod 600 ~/.gc/.env
 ```
@@ -31,10 +32,13 @@ gc teams --json > ~/.gc/teams.json
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GC_EMAIL` | yes | — | GameChanger account email |
-| `GC_PASSWORD` | yes | — | GameChanger account password |
+| `GC_EMAIL` | yes* | — | GameChanger account email |
+| `GC_PASSWORD` | yes* | — | GameChanger account password |
+| `GC_TOKEN` | alt* | — | Bearer token (skips Playwright; use if MFA is required) |
 | `GC_CALENDAR_ID` | for sync | — | Google Calendar ID (e.g. `abc@group.calendar.google.com`) |
 | `GOG_ACCOUNT` | for sync | — | Google account for `gog` CLI |
+
+\* Set either `GC_EMAIL`+`GC_PASSWORD` (Playwright login) **or** `GC_TOKEN` (manual token).
 
 Config priority: env vars > `~/.gc/.env`
 

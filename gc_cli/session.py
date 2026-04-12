@@ -104,14 +104,18 @@ def _playwright_login(
         page = context.new_page()
 
         try:
-            page.goto("https://app.gc.com/login", timeout=30000)
+            # Step 1: email
+            page.goto("https://web.gc.com/", timeout=30000)
             page.fill('input[type="email"]', email)
-            page.fill('input[type="password"]', password)
-            page.click('button[type="submit"]')
+            page.click('button:has-text("Continue")')
+            page.wait_for_url("**/login**", timeout=15000)
+            # Step 2: password
+            page.fill('input[name="password"]', password)
+            page.click('button:has-text("Sign in")')
             page.wait_for_url("**/home**", timeout=30000)
         except Exception as e:
             browser.close()
-            hint = " Try --visible to debug Cloudflare." if not visible else ""
+            hint = " Try --visible to debug." if not visible else ""
             raise RuntimeError(f"GameChanger login failed: {e}.{hint}") from e
 
         raw_cookies = context.cookies()
@@ -134,8 +138,44 @@ def _playwright_login(
     return session, raw_cookies
 
 
+def _token_from_env() -> str | None:
+    """Return GC_TOKEN from env or ~/.gc/.env if set."""
+    token = os.environ.get("GC_TOKEN")
+    if token:
+        return token
+    env_path = GC_DIR / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == "GC_TOKEN":
+                return v.strip().strip('"').strip("'")
+    return None
+
+
 def get_session(verbose: bool = True, visible: bool = False) -> requests.Session:
-    """Return an authenticated requests.Session. Uses cache if TTL valid."""
+    """Return an authenticated requests.Session.
+
+    Auth priority:
+      1. GC_TOKEN env var or ~/.gc/.env → direct Bearer token (no Playwright)
+      2. Cached Playwright session (60-min TTL)
+      3. Fresh Playwright login at web.gc.com
+
+    Use GC_TOKEN if GameChanger requires an OTP code on new device logins.
+    """
+    token = _token_from_env()
+    if token:
+        if verbose:
+            print("  Using GC_TOKEN from env", file=sys.stderr)
+        session = requests.Session()
+        session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        })
+        return session
+
     email, password = _get_credentials()
 
     cached = _load_cached_session(email)
