@@ -66,24 +66,64 @@ def _save_teams(teams: list[dict]) -> None:
 
 def _normalize_team(raw: dict) -> dict:
     """Normalize a raw team object to {id, name, sport, season}."""
+    season_year = raw.get("season_year", "")
+    season_name = raw.get("season_name", "")
+    if season_year or season_name:
+        season = f"{season_name} {season_year}".strip()
+    else:
+        season = raw.get("season", "")
     return {
         "id": raw.get("id") or raw.get("teamId", ""),
         "name": raw.get("name") or raw.get("teamName", "Unknown"),
         "sport": raw.get("sport", ""),
-        "season": raw.get("season", ""),
+        "season": season,
     }
 
 
 def _normalize_event(raw: dict) -> dict:
-    """Normalize a raw schedule event to {id, date, time, type, opponent, location, home_away}."""
+    """Normalize a raw schedule event to {id, date, time, type, opponent, location, home_away}.
+
+    API returns each list item as {"event": {...}, "pregame_data": {...}}.
+    pregame_data is only present for games (has opponent_name and home_away).
+    """
+    ev = raw.get("event", raw)
+    pregame = raw.get("pregame_data") or {}
+
+    # Parse UTC datetime → local date/time using event timezone
+    start = ev.get("start") or {}
+    dt_str = start.get("datetime", "")
+    timezone_str = ev.get("timezone", "UTC")
+    date = ""
+    time_str = ""
+    if dt_str:
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            dt_utc = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            dt_local = dt_utc.astimezone(ZoneInfo(timezone_str))
+            date = dt_local.strftime("%Y-%m-%d")
+            time_str = dt_local.strftime("%H:%M")
+        except Exception:
+            date = dt_str[:10]
+            time_str = dt_str[11:16]
+
+    # Location: name + address lines
+    loc = ev.get("location") or {}
+    loc_name = loc.get("name", "")
+    loc_addr = loc.get("address") or []
+    if loc_addr:
+        location = f"{loc_name}, {', '.join(loc_addr)}" if loc_name else ", ".join(loc_addr)
+    else:
+        location = loc_name
+
     return {
-        "id": raw.get("id") or raw.get("eventId", ""),
-        "date": raw.get("date") or raw.get("start_date", ""),
-        "time": raw.get("time") or raw.get("start_time", ""),
-        "type": raw.get("type") or raw.get("event_type", ""),
-        "opponent": raw.get("opponent") or raw.get("title") or raw.get("name", ""),
-        "location": raw.get("location") or raw.get("venue", ""),
-        "home_away": raw.get("home_away") or raw.get("homeAway", ""),
+        "id": ev.get("id", ""),
+        "date": date,
+        "time": time_str,
+        "type": ev.get("event_type", ""),
+        "opponent": pregame.get("opponent_name", "") or ev.get("title", ""),
+        "location": location,
+        "home_away": pregame.get("home_away", ""),
     }
 
 
