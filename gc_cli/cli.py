@@ -199,33 +199,76 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 
 def cmd_token_refresh(args: argparse.Namespace) -> None:
-    """Refresh gc-token using the saved Playwright browser context.
+    """Refresh gc-token — keeps the GameChanger session alive without OTP.
 
-    Restores ~/.gc/sessions/playwright_context.json, navigates to GC to
-    trigger API calls, captures a fresh gc-token JWT, and writes it back
-    to ~/.gc/.env.  Avoids OTP because the existing browser session cookies
-    are reused.  Falls back to a full Playwright login if the context is
-    missing or stale.
+    Strategy (in order):
+      1. Saved Playwright context (playwright_context.json) — captures a fresh
+         JWT from the browser session, updates ~/.gc/.env.  No OTP needed.
+      2. Env token ping — if no context exists, hits the GC API with the current
+         GC_TOKEN to extend the sliding session.  Fails loudly on 401 so the
+         user knows to paste a fresh token.
+
+    The systemd timer calls this every 45 min on headless servers.
+    Use --visible for the one-time setup on a machine with a display.
     """
+    from gc_cli.session import _token_from_env, _make_session
+
     visible = getattr(args, "visible", False)
 
-    session = _try_context_login(verbose=True)
-    if session:
-        token = session.headers.get("gc-token", "")
-        device_id = session.headers.get("gc-device-id") or None
+    # --- Path 1: Playwright context restore (preferred) ---
+    context_session = _try_context_login(verbose=True)
+    if context_session:
+        token = context_session.headers.get("gc-token", "")
+        device_id = context_session.headers.get("gc-device-id") or None
         _update_env_token(token, device_id)
         print("  Token refreshed via saved browser context", file=sys.stderr)
         return
 
-    # Saved context missing/stale — fall back to full Playwright login
-    print("  No saved context found — running full Playwright login...", file=sys.stderr)
-    print("  (Use --visible if an OTP prompt appears)", file=sys.stderr)
-    email, password = _get_credentials()
-    session = _playwright_login(email, password, visible=visible)
-    token = session.headers.get("gc-token", "")
-    device_id = session.headers.get("gc-device-id") or None
-    _update_env_token(token, device_id)
-    print("  Token refreshed via full login, browser context saved", file=sys.stderr)
+    # --- Path 2: API ping to extend sliding session ---
+    token, device_id = _token_from_env()
+    if token:
+        print("  No saved context — pinging API to extend session...", file=sys.stderr)
+        import requests as _requests
+        session = _make_session(token, device_id)
+        try:
+            resp = session.get(
+                "https://api.team-manager.gc.com/me/teams", timeout=15
+            )
+        except _requests.RequestException as e:
+            print(f"  ERROR: Network error during ping: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        if resp.status_code == 200:
+            print("  Token valid — session kept alive", file=sys.stderr)
+            return
+        if resp.status_code == 401:
+            print(
+                "  ERROR: Token expired (401).\n"
+                "  Get a fresh gc-token from DevTools and update ~/.gc/.env:\n"
+                "    GC_TOKEN=\"<paste new token>\"\n"
+                "  Then run: gc token-refresh",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"  WARN: Unexpected status {resp.status_code}", file=sys.stderr)
+        return
+
+    # --- No token, no context — need full login ---
+    print(
+        "  No GC_TOKEN or saved context found.\n"
+        "  On a machine with a display, run: gc token-refresh --visible\n"
+        "  On headless servers, add GC_TOKEN to ~/.gc/.env",
+        file=sys.stderr,
+    )
+    if visible:
+        email, password = _get_credentials()
+        session = _playwright_login(email, password, visible=True)
+        token = session.headers.get("gc-token", "")
+        device_id = session.headers.get("gc-device-id") or None
+        _update_env_token(token, device_id)
+        print("  Token refreshed via full login, browser context saved", file=sys.stderr)
+    else:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
