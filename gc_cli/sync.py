@@ -10,6 +10,7 @@ Public surface:
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -131,11 +132,23 @@ def _iso_times(event: dict) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def _run_gog(args: list[str]) -> tuple[bool, str]:
-    """Run `gog <args>`. Returns (success, stdout-or-stderr)."""
+    """Run `gog <args>`. Returns (success, stdout-or-stderr).
+
+    Automatically sets GOG_KEYRING_PASSWORD="" (required on headless systems)
+    and appends --account <GOG_ACCOUNT> if that env var is set.
+    """
+    env = os.environ.copy()
+    env.setdefault("GOG_KEYRING_PASSWORD", "")
+
+    account = os.environ.get("GOG_ACCOUNT")
+    if account:
+        args = list(args) + ["--account", account]
+
     result = subprocess.run(
         ["gog"] + args,
         capture_output=True,
         text=True,
+        env=env,
     )
     if result.returncode != 0:
         return False, result.stderr.strip() or result.stdout.strip()
@@ -155,7 +168,12 @@ def _parse_gcal_event_id(gog_output: str) -> str:
 
     try:
         data = json.loads(gog_output)
-        return str(data.get("id") or data.get("eventId") or gog_output.strip())
+        # gog wraps the event: {"event": {"id": "..."}}
+        event = data.get("event", data) if isinstance(data, dict) else data
+        event_id = (event.get("id") or event.get("eventId")) if isinstance(event, dict) else None
+        if event_id:
+            return str(event_id)
+        return gog_output.strip()
     except (json.JSONDecodeError, AttributeError):
         pass
 
