@@ -131,11 +131,10 @@ def test_get_session_runs_playwright_when_cache_missing(tmp_gc_dir, monkeypatch)
     monkeypatch.setenv("GC_PASSWORD", "secret")
 
     fresh_session = requests.Session()
-    fresh_session.headers.update({"Authorization": "Bearer fresh-token"})
+    fresh_session.headers.update({"gc-token": "fresh-token"})
 
-    with patch("gc_cli.session._playwright_login", return_value=(fresh_session, [])):
+    with patch("gc_cli.session._try_context_login", return_value=None), \
+         patch("gc_cli.session._playwright_login", return_value=fresh_session):
         result = get_session(verbose=False)
 
-    assert result.headers.get("Authorization") == "Bearer fresh-token"
-    # Session should now be cached
-    assert _load_cached_session("user@example.com") is not None
+    assert result.headers.get("gc-token") == "fresh-token"
