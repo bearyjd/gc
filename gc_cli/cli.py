@@ -19,10 +19,8 @@ import requests
 
 from gc_cli.client import (
     GCClient,
-    _ensure_dir,
     _load_env,
     _load_teams,
-    _save_teams,
     ENV_PATH,
     GC_DIR,
     TEAMS_PATH,
@@ -82,8 +80,7 @@ def output_schedule(events: list[dict], as_json: bool) -> None:
 
 def output_summary(summary: dict, as_json: bool) -> None:
     if as_json:
-        summary["timestamp"] = datetime.now().isoformat()
-        print(json.dumps(summary, indent=2))
+        print(json.dumps({**summary, "timestamp": datetime.now().isoformat()}, indent=2))
         return
     team_id = summary.get("team_id", "unknown")
     schedule = summary.get("schedule", [])
