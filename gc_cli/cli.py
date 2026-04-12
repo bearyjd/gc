@@ -191,7 +191,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     events = client.get_schedule(team_id)
     print(f"  {len(events)} events fetched", file=sys.stderr)
 
-    result = sync_team(events, calendar_id, GC_DIR, dry_run=args.dry_run)
+    result = sync_team(events, calendar_id, GC_DIR, dry_run=args.dry_run, team_id=team_id)
     output_sync_result(result, args.dry_run)
 
     if result.errors:

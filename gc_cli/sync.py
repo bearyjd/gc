@@ -22,7 +22,8 @@ from pathlib import Path
 # Constants
 # ---------------------------------------------------------------------------
 
-SYNC_STATE_FILENAME = "sync-state.json"
+SYNC_STATE_FILENAME = "sync-state.json"  # legacy single-team path
+SYNC_STATE_TEAM_TEMPLATE = "sync-state-{team_id}.json"
 
 # gog calendar color IDs (from `gog calendar colors`)
 COLOR_GAME = "9"       # #5484ed blue
@@ -53,8 +54,25 @@ class SyncResult:
 # State persistence
 # ---------------------------------------------------------------------------
 
-def load_state(gc_dir: Path) -> dict:
-    """Read ~/.gc/sync-state.json. Returns {} if missing or unreadable."""
+def load_state(gc_dir: Path, team_id: str | None = None) -> dict:
+    """Read per-team sync state. Falls back to legacy sync-state.json."""
+    if team_id:
+        path = gc_dir / SYNC_STATE_TEAM_TEMPLATE.format(team_id=team_id)
+        if not path.exists():
+            # migrate from legacy single-file state if it exists
+            legacy = gc_dir / SYNC_STATE_FILENAME
+            if legacy.exists():
+                try:
+                    return json.loads(legacy.read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    # legacy path (no team_id)
     path = gc_dir / SYNC_STATE_FILENAME
     if not path.exists():
         return {}
@@ -64,9 +82,14 @@ def load_state(gc_dir: Path) -> dict:
         return {}
 
 
-def save_state(state: dict, gc_dir: Path) -> None:
-    """Write state dict to ~/.gc/sync-state.json (mode 0600)."""
-    path = gc_dir / SYNC_STATE_FILENAME
+def save_state(state: dict, gc_dir: Path, team_id: str | None = None) -> None:
+    """Write per-team sync state (mode 0600)."""
+    filename = (
+        SYNC_STATE_TEAM_TEMPLATE.format(team_id=team_id)
+        if team_id
+        else SYNC_STATE_FILENAME
+    )
+    path = gc_dir / filename
     path.write_text(json.dumps(state, indent=2) + "\n")
     path.chmod(0o600)
 
@@ -205,6 +228,7 @@ def sync_team(
     calendar_id: str,
     gc_dir: Path,
     dry_run: bool = False,
+    team_id: str | None = None,
 ) -> SyncResult:
     """Diff events against sync-state.json and call gog for each change.
 
@@ -218,7 +242,7 @@ def sync_team(
             "See: https://gogcli.sh"
         )
 
-    state = load_state(gc_dir)
+    state = load_state(gc_dir, team_id=team_id)
     result = SyncResult()
     incoming = {e["id"]: e for e in events if e.get("id")}
 
@@ -304,6 +328,6 @@ def sync_team(
             result.cancelled.append(gcal_event_id)
 
     if not dry_run:
-        save_state(state, gc_dir)
+        save_state(state, gc_dir, team_id=team_id)
 
     return result
