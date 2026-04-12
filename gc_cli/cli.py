@@ -242,14 +242,17 @@ def cmd_token_refresh(args: argparse.Namespace) -> None:
             print("  Token valid — session kept alive", file=sys.stderr)
             return
         if resp.status_code == 401:
-            print(
-                "  ERROR: Token expired (401).\n"
-                "  Get a fresh gc-token from DevTools and update ~/.gc/.env:\n"
-                "    GC_TOKEN=\"<paste new token>\"\n"
-                "  Then run: gc token-refresh",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            if visible:
+                print("  Token expired (401) — falling back to full login...", file=sys.stderr)
+            else:
+                print(
+                    "  ERROR: Token expired (401).\n"
+                    "  Get a fresh gc-token from DevTools and update ~/.gc/.env:\n"
+                    "    GC_TOKEN=\"<paste new token>\"\n"
+                    "  Then run: gc token-refresh",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         print(f"  WARN: Unexpected status {resp.status_code}", file=sys.stderr)
         return
 
