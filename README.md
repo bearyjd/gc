@@ -35,7 +35,7 @@ gc teams --json > ~/.gc/teams.json
 |---|---|---|---|
 | `GC_EMAIL` | yes* | — | GameChanger account email |
 | `GC_PASSWORD` | yes* | — | GameChanger account password |
-| `GC_TOKEN` | alt* | — | Bearer token (skips Playwright; use if MFA is required) |
+| `GC_TOKEN` | alt* | — | `gc-token` header value (skips Playwright; use if MFA blocks headless login) |
 | `GC_DEVICE_ID` | no | — | Device ID sent with `GC_TOKEN`; helps GC recognize device, may skip OTP |
 | `GC_CALENDAR_ID` | for sync | — | Google Calendar ID (e.g. `abc@group.calendar.google.com`) |
 | `GOG_ACCOUNT` | for sync | — | Google account for `gog` CLI |
@@ -99,7 +99,8 @@ gc summary --json
 ## How it works
 
 - Logs in via headless Chromium (Playwright) using `GC_EMAIL` + `GC_PASSWORD`
-- Session cached in `~/.gc/sessions/` for 60 minutes (keyed by email hash)
+- Browser context saved to `~/.gc/sessions/playwright_context.json` after first login — restoring it skips OTP on all subsequent runs
+- Captures `gc-token` and `gc-device-id` from API request headers (not localStorage)
 - Calls GameChanger's REST API (`https://api.team-manager.gc.com`)
 - Key endpoints: `/me/teams`, `/teams/{id}/schedule`, `/clips?kind=event&teamId={id}`
 - `gc sync` diffs events against `~/.gc/sync-state.json` and calls `gog` CLI for Google Calendar ops
@@ -112,7 +113,9 @@ gc summary --json
   .env              # GC_EMAIL, GC_PASSWORD, GC_CALENDAR_ID (0600)
   teams.json        # [{id, name, sport, ...}] — team IDs to track
   sync-state.json   # GC event ID → {gcal_event_id, fingerprint, ...}
-  sessions/         # cached login sessions (auto-managed)
+  sessions/
+    playwright_context.json  # saved browser state — restores login without OTP (auto-managed)
+    *.json                   # per-email session cache (60-min TTL)
 ```
 
 ## Cron (Multiple Teams)
