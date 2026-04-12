@@ -120,6 +120,7 @@ def _normalize_event(raw: dict) -> dict:
         "id": ev.get("id", ""),
         "date": date,
         "time": time_str,
+        "timezone": timezone_str,
         "type": ev.get("event_type", ""),
         "opponent": pregame.get("opponent_name", "") or ev.get("title", ""),
         "location": location,

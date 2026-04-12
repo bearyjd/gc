@@ -101,22 +101,33 @@ def _event_color(event_type: str) -> str:
 
 
 def _iso_times(event: dict) -> tuple[str, str]:
-    """Return (start_iso, end_iso) with duration defaults if end is absent."""
+    """Return (start_rfc3339, end_rfc3339) with timezone offset included.
+
+    gog requires RFC3339 (e.g. 2026-04-13T14:45:00-04:00). The event's
+    date/time are already in local time; we attach the timezone from the
+    event's 'timezone' field (default: America/New_York) to produce a
+    timezone-aware datetime, then format with UTC offset.
+    """
+    from zoneinfo import ZoneInfo
+
     date_str = event.get("date", "")
     time_str = event.get("time", "00:00") or "00:00"
+    tz_name = event.get("timezone", "America/New_York") or "America/New_York"
     etype = event.get("type", "").lower()
 
+    tz = ZoneInfo(tz_name)
     start: datetime | None = None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            start = datetime.strptime(f"{date_str} {time_str}".strip(), fmt)
+            naive = datetime.strptime(f"{date_str} {time_str}".strip(), fmt)
+            start = naive.replace(tzinfo=tz)
             break
         except ValueError:
             continue
 
     if start is None:
-        # Fallback: midnight today
-        start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        # Fallback: midnight today in event timezone
+        start = datetime.now(tz=tz).replace(hour=0, minute=0, second=0, microsecond=0)
 
     duration_key = (
         "practice" if "practice" in etype else
