@@ -89,11 +89,12 @@ gc sync --team abc123 --calendar your-id@group.calendar.google.com
 ```bash
 # Schedule
 gc schedule --json
-# → [{date, time, type, opponent, location, ...}]
+# → [{id, date, time, timezone, type, opponent, location, home_away}]
 
 # Summary (schedule + clips)
 gc summary --json
 # → {team_id, timestamp, schedule: [...], clips: [...]}
+# clips: [{id, title, url, event_id}]
 ```
 
 ## How it works
@@ -177,3 +178,7 @@ After install:
 ## school-dashboard Integration
 
 This tool outputs to `/tmp/gc/` which is read by `school-sync.sh` and fed into the `school-state` update pipeline alongside IXL and Schoology data.
+
+## License
+
+MIT
