@@ -90,9 +90,13 @@ def _save_session(email: str, session: requests.Session, cookies: list[dict]) ->
     path.chmod(0o600)
 
 
-def _capture_gc_token_from_page(page) -> str | None:  # type: ignore[no-untyped-def]
-    """Intercept gc-token from API request headers by navigating to home."""
-    captured: list[str] = []
+def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # type: ignore[no-untyped-def]
+    """Intercept gc-token and gc-device-id from API request headers.
+
+    Returns (gc_token, gc_device_id). Either may be None if not observed.
+    """
+    captured_token: list[str] = []
+    captured_device: list[str] = []
 
     def handle_response(response) -> None:  # type: ignore[no-untyped-def]
         if "api.team-manager.gc.com" not in response.url:
@@ -100,8 +104,11 @@ def _capture_gc_token_from_page(page) -> str | None:  # type: ignore[no-untyped-
         try:
             h = response.request.all_headers()
             t = h.get("gc-token", "")
-            if t and t.startswith("eyJ") and len(t) > 200:
-                captured.append(t)
+            if t and t.startswith("eyJ") and len(t) > 200 and not captured_token:
+                captured_token.append(t)
+            d = h.get("gc-device-id", "")
+            if d and not captured_device:
+                captured_device.append(d)
         except Exception:
             pass
 
@@ -109,7 +116,24 @@ def _capture_gc_token_from_page(page) -> str | None:  # type: ignore[no-untyped-
     page.goto("https://web.gc.com/home", timeout=30000)
     page.wait_for_timeout(5000)
     page.remove_listener("response", handle_response)
-    return captured[0] if captured else None
+    return (
+        captured_token[0] if captured_token else None,
+        captured_device[0] if captured_device else None,
+    )
+
+
+def _make_session(gc_token: str, gc_device_id: str | None = None) -> requests.Session:
+    """Build an authenticated requests.Session with the correct GC headers."""
+    session = requests.Session()
+    headers: dict[str, str] = {
+        "gc-token": gc_token,
+        "gc-app-name": "web",
+        "Accept": "application/json",
+    }
+    if gc_device_id:
+        headers["gc-device-id"] = gc_device_id
+    session.headers.update(headers)
+    return session
 
 
 def _try_context_login(verbose: bool = False) -> requests.Session | None:
@@ -128,13 +152,14 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
         print("  Trying saved browser session...", file=sys.stderr)
 
     gc_token: str | None = None
+    gc_device_id: str | None = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(storage_state=str(CONTEXT_PATH))
             page = context.new_page()
 
-            gc_token = _capture_gc_token_from_page(page)
+            gc_token, gc_device_id = _capture_gc_headers_from_page(page)
 
             # Refresh saved context (keeps cookies current)
             SESSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -149,12 +174,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
     if not gc_token:
         return None
 
-    session = requests.Session()
-    session.headers.update({
-        "gc-token": gc_token,
-        "gc-app-name": "web",
-        "Accept": "application/json",
-    })
+    session = _make_session(gc_token, gc_device_id)
 
     # Verify the token is accepted
     try:
@@ -182,9 +202,10 @@ def _playwright_login(
     from playwright.sync_api import sync_playwright  # lazy import
 
     gc_token: str | None = None
+    gc_device_id: str | None = None
 
     def handle_response(response) -> None:  # type: ignore[no-untyped-def]
-        nonlocal gc_token
+        nonlocal gc_token, gc_device_id
         if "api.team-manager.gc.com" not in response.url:
             return
         try:
@@ -192,6 +213,9 @@ def _playwright_login(
             t = h.get("gc-token", "")
             if t and t.startswith("eyJ") and len(t) > 200 and not gc_token:
                 gc_token = t
+            d = h.get("gc-device-id", "")
+            if d and not gc_device_id:
+                gc_device_id = d
         except Exception:
             pass
 
@@ -251,12 +275,7 @@ def _playwright_login(
             "Set GC_TOKEN manually (see instructions above)."
         )
 
-    session = requests.Session()
-    session.headers.update({
-        "gc-token": gc_token,
-        "gc-app-name": "web",
-        "Accept": "application/json",
-    })
+    session = _make_session(gc_token, gc_device_id)
     for cookie in raw_cookies:
         session.cookies.set(
             cookie["name"], cookie["value"], domain=cookie.get("domain", "")
@@ -264,44 +283,44 @@ def _playwright_login(
     return session
 
 
-def _token_from_env() -> str | None:
-    """Return GC_TOKEN from env or ~/.gc/.env if set."""
+def _token_from_env() -> tuple[str | None, str | None]:
+    """Return (GC_TOKEN, GC_DEVICE_ID) from env or ~/.gc/.env."""
     token = os.environ.get("GC_TOKEN")
-    if token:
-        return token
-    env_path = GC_DIR / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == "GC_TOKEN":
-                return v.strip().strip('"').strip("'")
-    return None
+    device_id = os.environ.get("GC_DEVICE_ID")
+
+    if not token or not device_id:
+        env_path = GC_DIR / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = v.strip().strip('"').strip("'")
+                if k.strip() == "GC_TOKEN" and not token:
+                    token = v
+                elif k.strip() == "GC_DEVICE_ID" and not device_id:
+                    device_id = v
+
+    return token, device_id
 
 
 def get_session(verbose: bool = True, visible: bool = False) -> requests.Session:
     """Return an authenticated requests.Session.
 
     Auth priority:
-      1. GC_TOKEN env var or ~/.gc/.env → direct Bearer token (no Playwright)
-      2. Cached Playwright session (60-min TTL)
+      1. GC_TOKEN env var or ~/.gc/.env → direct token (no Playwright)
+      2. Saved Playwright browser context (skips OTP)
       3. Fresh Playwright login at web.gc.com
 
-    Use GC_TOKEN if GameChanger requires an OTP code on new device logins.
+    GC_DEVICE_ID is optional but recommended alongside GC_TOKEN — GameChanger
+    uses it for device recognition and may skip OTP when it is present.
     """
-    token = _token_from_env()
+    token, device_id = _token_from_env()
     if token:
         if verbose:
             print("  Using GC_TOKEN from env", file=sys.stderr)
-        session = requests.Session()
-        session.headers.update({
-            "gc-token": token,
-            "gc-app-name": "web",
-            "Accept": "application/json",
-        })
-        return session
+        return _make_session(token, device_id)
 
     email, password = _get_credentials()
 

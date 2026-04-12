@@ -19,7 +19,8 @@ GC_EMAIL="you@example.com"
 GC_PASSWORD="yourpassword"
 GC_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
 # GOG_ACCOUNT="you@gmail.com"
-# GC_TOKEN="your-bearer-token"  # Alternative if MFA is required (skips Playwright)
+# GC_TOKEN="eyJ..."              # Alternative if MFA is required (skips Playwright)
+# GC_DEVICE_ID="a85ba962..."    # Optional alongside GC_TOKEN — helps GC recognize device
 EOF
 chmod 600 ~/.gc/.env
 ```
@@ -35,10 +36,12 @@ gc teams --json > ~/.gc/teams.json
 | `GC_EMAIL` | yes* | — | GameChanger account email |
 | `GC_PASSWORD` | yes* | — | GameChanger account password |
 | `GC_TOKEN` | alt* | — | Bearer token (skips Playwright; use if MFA is required) |
+| `GC_DEVICE_ID` | no | — | Device ID sent with `GC_TOKEN`; helps GC recognize device, may skip OTP |
 | `GC_CALENDAR_ID` | for sync | — | Google Calendar ID (e.g. `abc@group.calendar.google.com`) |
 | `GOG_ACCOUNT` | for sync | — | Google account for `gog` CLI |
 
 \* Set either `GC_EMAIL`+`GC_PASSWORD` (Playwright login) **or** `GC_TOKEN` (manual token).
+Get `GC_TOKEN` and `GC_DEVICE_ID` from DevTools → Network → any `api.team-manager.gc.com` request headers.
 
 Config priority: env vars > `~/.gc/.env`
 
