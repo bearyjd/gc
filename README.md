@@ -1,24 +1,24 @@
 # gc — GameChanger Team Schedule & Clips CLI
 
-> **SCAFFOLD** — API response parsing is stubbed until tested with real credentials. Endpoints and auth pattern are correct; response-parsing logic will be filled in once we can inspect actual API responses.
-
 CLI scraper for GameChanger team data. Pulls schedules, game events, and clips. Designed to be called by an OpenClaw cron agent via `--json`.
 
 ## Setup
 
 ```bash
-pip install -e .
+pip install -e '.[browser]'
+playwright install chromium
 ```
 
 Configure credentials:
 
 ```bash
-# Create config directory
 mkdir -p ~/.gc && chmod 700 ~/.gc
 
-# Add your token (extracted from browser DevTools > Network > Authorization header)
 cat > ~/.gc/.env << 'EOF'
-GC_TOKEN="your-gc-token-here"
+GC_EMAIL="you@example.com"
+GC_PASSWORD="yourpassword"
+GC_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
+# GOG_ACCOUNT="you@gmail.com"
 EOF
 chmod 600 ~/.gc/.env
 ```
@@ -31,16 +31,21 @@ gc teams --json > ~/.gc/teams.json
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GC_TOKEN` | yes | — | Bearer token from browser session |
+| `GC_EMAIL` | yes | — | GameChanger account email |
+| `GC_PASSWORD` | yes | — | GameChanger account password |
+| `GC_CALENDAR_ID` | for sync | — | Google Calendar ID (e.g. `abc@group.calendar.google.com`) |
+| `GOG_ACCOUNT` | for sync | — | Google account for `gog` CLI |
 
 Config priority: env vars > `~/.gc/.env`
 
 ## Usage
 
 ```
-gc teams                           # list teams
-gc schedule  [--team ID] [--json]  # upcoming schedule
-gc summary   [--team ID] [--json]  # schedule + clips in one shot
+gc teams                                    # list teams
+gc schedule  [--team ID] [--json]           # upcoming schedule
+gc summary   [--team ID] [--json]           # schedule + clips in one shot
+gc sync      [--team ID] [--calendar ID]    # sync schedule to Google Calendar
+             [--dry-run] [--visible]
 ```
 
 All commands accept `--json` for machine-readable output.
@@ -61,6 +66,15 @@ gc summary --json
 
 # Save teams list for cron
 gc teams --json > ~/.gc/teams.json
+
+# Sync schedule to Google Calendar
+gc sync
+
+# Sync with dry-run (see what would change without calling gog)
+gc sync --dry-run
+
+# Sync a specific team to a specific calendar
+gc sync --team abc123 --calendar your-id@group.calendar.google.com
 ```
 
 ## JSON Output
@@ -77,34 +91,21 @@ gc summary --json
 
 ## How it works
 
-- Authenticates via `GC_TOKEN` Bearer header (extracted from browser session)
+- Logs in via headless Chromium (Playwright) using `GC_EMAIL` + `GC_PASSWORD`
+- Session cached in `~/.gc/sessions/` for 60 minutes (keyed by email hash)
 - Calls GameChanger's REST API (`https://api.team-manager.gc.com`)
 - Key endpoints: `/me/teams`, `/teams/{id}/schedule`, `/clips?kind=event&teamId={id}`
+- `gc sync` diffs events against `~/.gc/sync-state.json` and calls `gog` CLI for Google Calendar ops
 - All status/debug output goes to stderr; `--json` output is clean on stdout
-- No browser automation needed — pure HTTP API calls
-
-## ICS Calendar Sync (Interim)
-
-As a secondary data path while the API scaffold is being tested, GameChanger
-supports ICS calendar export:
-
-1. Open GameChanger app > Team > Schedule > Share/Export
-2. Copy the ICS feed URL
-3. Subscribe in your calendar app, or fetch with curl:
-
-```bash
-curl -o /tmp/gc/team-schedule.ics "https://gc-calendar-url..."
-```
-
-This gives you game dates and times without needing API auth. The CLI
-will supersede this once API response parsing is complete.
 
 ## File layout
 
 ```
 ~/.gc/
-  .env              # GC_TOKEN (0600)
+  .env              # GC_EMAIL, GC_PASSWORD, GC_CALENDAR_ID (0600)
   teams.json        # [{id, name, sport, ...}] — team IDs to track
+  sync-state.json   # GC event ID → {gcal_event_id, fingerprint, ...}
+  sessions/         # cached login sessions (auto-managed)
 ```
 
 ## Cron (Multiple Teams)
@@ -154,7 +155,7 @@ ssh root@<LXC_IP> 'bash -s' < install-lxc.sh
 This installs the `gc` CLI and clones the repo for the cron script. Idempotent — safe to re-run.
 
 After install:
-1. Create `~/.gc/.env` with `GC_TOKEN` on the server
+1. Create `~/.gc/.env` with `GC_EMAIL`, `GC_PASSWORD`, and `GC_CALENDAR_ID` on the server
 2. Run `gc teams --json > ~/.gc/teams.json`
 
 ### 2. Create schedule in OpenClaw app
