@@ -36,6 +36,9 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+# Refresh token before scraping (keeps sliding session alive)
+gc token-refresh 2>/dev/null || true
+
 # Parse team IDs from JSON array using python (available on all targets)
 TEAM_IDS=$(python3 -c "
 import json, sys
@@ -61,6 +64,9 @@ while IFS=: read -r team_id team_name; do
 
     gc summary --team "$team_id" --json > "$OUTPUT_DIR/${safe_name}-summary.json" 2>/dev/null || \
         echo "[$(date '+%H:%M:%S')] WARN: summary failed for $team_name" >&2
+
+    gc sync --team "$team_id" 2>&1 | sed "s/^/[$(date '+%H:%M:%S')] sync: /" >&2 || \
+        echo "[$(date '+%H:%M:%S')] WARN: sync failed for $team_name" >&2
 
     echo "[$(date '+%H:%M:%S')] Done: $team_name" >&2
 done <<< "$TEAM_IDS"
