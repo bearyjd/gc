@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gc"
-version = "0.1.1"
+version = "0.1.2"
 description = "GameChanger team schedule & clips CLI scraper"
 license = "MIT"
 requires-python = ">=3.10"
