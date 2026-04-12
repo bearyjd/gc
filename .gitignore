@@ -8,3 +8,7 @@ dist/
 build/
 .sisyphus/
 NOTES.md
+.pytest_cache/
+tests/e2e/.env
+tests/e2e/output/
+*.log
