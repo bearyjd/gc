@@ -1,17 +1,17 @@
 """
 gc — GameChanger team schedule & clips CLI scraper.
 
-SCAFFOLD — API response parsing is stubbed until tested with real credentials.
-Auth is via GC_TOKEN extracted from a browser session.
-
 Usage:
-    gc teams                           — list teams for the authenticated user
-    gc schedule  [--team ID] [--json]  — upcoming schedule for a team
-    gc summary   [--team ID] [--json]  — schedule + clips in one shot
+    gc teams                                    — list teams for the authenticated user
+    gc schedule  [--team ID] [--json]           — upcoming schedule for a team
+    gc summary   [--team ID] [--json]           — schedule + clips in one shot
+    gc sync      [--team ID] [--calendar ID]    — sync schedule to Google Calendar via gog
+                 [--dry-run] [--visible]
 """
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 
@@ -20,12 +20,28 @@ import requests
 from gc_cli.client import (
     GCClient,
     _ensure_dir,
+    _load_env,
     _load_teams,
     _save_teams,
     ENV_PATH,
     GC_DIR,
     TEAMS_PATH,
 )
+from gc_cli.session import get_session
+from gc_cli.sync import sync_team, SyncResult
+
+
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def _get_calendar_id() -> str | None:
+    """Resolve GC_CALENDAR_ID from env or ~/.gc/.env."""
+    cal_id = os.environ.get("GC_CALENDAR_ID")
+    if cal_id:
+        return cal_id
+    env = _load_env()
+    return env.get("GC_CALENDAR_ID")
 
 
 # ---------------------------------------------------------------------------
@@ -42,10 +58,7 @@ def output_teams(teams: list[dict], as_json: bool) -> None:
     print(f"\n{'Name':<30} {'ID':<25} {'Sport'}")
     print("-" * 65)
     for t in teams:
-        name = t.get("name", t.get("teamName", "Unknown"))
-        tid = t.get("id", t.get("teamId", ""))
-        sport = t.get("sport", "")
-        print(f"{name:<30} {tid:<25} {sport}")
+        print(f"{t.get('name',''):<30} {t.get('id',''):<25} {t.get('sport','')}")
     print()
 
 
@@ -59,10 +72,10 @@ def output_schedule(events: list[dict], as_json: bool) -> None:
     print(f"\n{'Date':<14} {'Time':<8} {'Type':<12} {'Opponent / Title'}")
     print("-" * 55)
     for ev in events:
-        date = ev.get("date", ev.get("start_date", ""))[:13]
-        time = ev.get("time", ev.get("start_time", ""))[:7]
-        etype = ev.get("type", ev.get("event_type", ""))[:11]
-        title = ev.get("opponent", ev.get("title", ev.get("name", "")))[:35]
+        date = ev.get("date", "")[:13]
+        time = ev.get("time", "")[:7]
+        etype = ev.get("type", "")[:11]
+        title = ev.get("opponent", ev.get("title", ""))[:35]
         print(f"{date:<14} {time:<8} {etype:<12} {title}")
     print()
 
@@ -89,9 +102,20 @@ def output_summary(summary: dict, as_json: bool) -> None:
         print("No clips found.")
     else:
         for c in clips[:10]:
-            title = c.get("title", c.get("name", "Untitled"))
-            print(f"  {title}")
+            print(f"  {c.get('title', 'Untitled')}")
     print()
+
+
+def output_sync_result(result: SyncResult, dry_run: bool) -> None:
+    prefix = "[DRY RUN] " if dry_run else ""
+    print(f"\n{prefix}Sync complete:", file=sys.stderr)
+    print(f"  Created:   {len(result.created)}", file=sys.stderr)
+    print(f"  Updated:   {len(result.updated)}", file=sys.stderr)
+    print(f"  Cancelled: {len(result.cancelled)}", file=sys.stderr)
+    if result.errors:
+        print(f"  Errors:    {len(result.errors)}", file=sys.stderr)
+        for err in result.errors:
+            print(f"    - {err}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -99,52 +123,75 @@ def output_summary(summary: dict, as_json: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def _resolve_team_id(args: argparse.Namespace, client: GCClient) -> str:
-    """Get team_id from --team flag, or first team in ~/.gc/teams.json."""
     if hasattr(args, "team") and args.team:
         return args.team
 
     teams = _load_teams()
     if teams:
-        tid = teams[0].get("id", teams[0].get("teamId", ""))
+        tid = teams[0].get("id", "")
         if tid:
             return tid
 
-    # Fall back to fetching from API
     api_teams = client.get_my_teams()
     if not api_teams:
         raise RuntimeError(
-            "No teams found. Use 'gc teams' to list available teams, "
+            "No teams found. Run 'gc teams' to list available teams, "
             "then save to ~/.gc/teams.json"
         )
-    return api_teams[0].get("id", api_teams[0].get("teamId", ""))
+    return api_teams[0].get("id", "")
 
 
 def cmd_teams(args: argparse.Namespace) -> None:
-    """List teams for the authenticated user."""
-    client = GCClient(verbose=not args.json)
+    session = get_session(verbose=not args.json, visible=getattr(args, "visible", False))
+    client = GCClient(session, verbose=not args.json)
     teams = client.get_my_teams()
     output_teams(teams, args.json)
 
-    # Offer to save if teams.json doesn't exist
     if teams and not TEAMS_PATH.exists() and not args.json:
         print("Tip: save teams for cron use:")
         print(f"  gc teams --json > {TEAMS_PATH}")
 
 
 def cmd_schedule(args: argparse.Namespace) -> None:
-    """Show schedule for a team."""
-    client = GCClient(verbose=not args.json)
+    session = get_session(verbose=not args.json, visible=getattr(args, "visible", False))
+    client = GCClient(session, verbose=not args.json)
     team_id = _resolve_team_id(args, client)
     events = client.get_schedule(team_id)
     output_schedule(events, args.json)
 
 
 def cmd_summary(args: argparse.Namespace) -> None:
-    """Full summary: schedule + clips for a team."""
-    client = GCClient(verbose=not args.json)
+    session = get_session(verbose=not args.json, visible=getattr(args, "visible", False))
+    client = GCClient(session, verbose=not args.json)
     team_id = _resolve_team_id(args, client)
     summary = client.get_team_summary(team_id)
     output_summary(summary, args.json)
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    calendar_id = args.calendar or _get_calendar_id()
+    if not calendar_id:
+        print(
+            "Error: GC_CALENDAR_ID not set.\n"
+            "Set it via env var or add to ~/.gc/.env:\n"
+            '  GC_CALENDAR_ID="your-calendar-id@group.calendar.google.com"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    session = get_session(verbose=True, visible=args.visible)
+    client = GCClient(session, verbose=True)
+    team_id = _resolve_team_id(args, client)
+
+    print(f"  Fetching schedule for team {team_id}...", file=sys.stderr)
+    events = client.get_schedule(team_id)
+    print(f"  {len(events)} events fetched", file=sys.stderr)
+
+    result = sync_team(events, calendar_id, GC_DIR, dry_run=args.dry_run)
+    output_sync_result(result, args.dry_run)
+
+    if result.errors:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +221,14 @@ def main() -> None:
     sp_sum.add_argument("--team", type=str, help="Team ID (default: first in ~/.gc/teams.json)")
     sp_sum.add_argument("--json", action="store_true", help="JSON output")
     sp_sum.set_defaults(func=cmd_summary)
+
+    # gc sync
+    sp_sync = subparsers.add_parser("sync", help="Sync schedule to Google Calendar via gog")
+    sp_sync.add_argument("--team", type=str, help="Team ID (default: first in ~/.gc/teams.json)")
+    sp_sync.add_argument("--calendar", type=str, help="Google Calendar ID (default: GC_CALENDAR_ID)")
+    sp_sync.add_argument("--dry-run", action="store_true", help="Show planned changes without calling gog")
+    sp_sync.add_argument("--visible", action="store_true", help="Run Playwright in headed mode (debug Cloudflare)")
+    sp_sync.set_defaults(func=cmd_sync)
 
     args = parser.parse_args()
     if not args.command:
