@@ -244,6 +244,7 @@ def cmd_token_refresh(args: argparse.Namespace) -> None:
         if resp.status_code == 401:
             if visible:
                 print("  Token expired (401) — falling back to full login...", file=sys.stderr)
+                # fall through to Playwright login below
             else:
                 print(
                     "  ERROR: Token expired (401).\n"
@@ -253,8 +254,9 @@ def cmd_token_refresh(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-        print(f"  WARN: Unexpected status {resp.status_code}", file=sys.stderr)
-        return
+        else:
+            print(f"  WARN: Unexpected status {resp.status_code}", file=sys.stderr)
+            return
 
     # --- No token, no context — need full login ---
     print(
