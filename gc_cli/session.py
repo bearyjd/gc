@@ -236,14 +236,30 @@ def _playwright_login(
             page.click('button:has-text("Sign in")')
 
             if visible:
-                # Visible mode: wait up to 5 min for token — user handles OTP themselves
+                # Visible mode: wait up to 5 min for a VERIFIED token.
+                # GC fires API calls during the OTP page load that contain a
+                # pre-auth token — we must verify before accepting so we don't
+                # close the browser before the user enters their OTP code.
                 print(
                     "  Waiting for login (enter OTP in browser if prompted)...",
                     file=sys.stderr,
                 )
                 for _ in range(60):  # 60 × 5s = 5 min
                     if gc_token:
-                        break
+                        test_session = _make_session(gc_token, gc_device_id)
+                        try:
+                            resp = test_session.get(
+                                "https://api.team-manager.gc.com/me/teams",
+                                timeout=10,
+                            )
+                            if resp.status_code == 200:
+                                break  # valid post-OTP token — done
+                        except Exception:
+                            pass
+                        # Token is pre-OTP / invalid — reset so handle_response
+                        # can capture the next (real) token after OTP entry.
+                        gc_token = None
+                        gc_device_id = None
                     page.wait_for_timeout(5000)
             else:
                 page.wait_for_timeout(8000)
