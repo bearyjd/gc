@@ -238,18 +238,30 @@ def _playwright_login(
 
             # Check whether OTP is blocking completion
             visible_text = page.evaluate("() => document.body.innerText")
-            if "sent a code" in visible_text.lower() or (
+            otp_required = "sent a code" in visible_text.lower() or (
                 "code" in visible_text.lower() and "sign in" in visible_text.lower()
-            ):
-                browser.close()
-                raise RuntimeError(
-                    "GameChanger requires a one-time verification code.\n"
-                    "Set GC_TOKEN in ~/.gc/.env to skip Playwright login:\n"
-                    "  1. Open web.gc.com in your browser and log in\n"
-                    "  2. DevTools → Network → any api.team-manager.gc.com request\n"
-                    "  3. Copy the 'gc-token' request header value\n"
-                    "  4. Add to ~/.gc/.env:  GC_TOKEN=\"<paste here>\""
-                )
+            )
+            if otp_required:
+                if visible:
+                    # User can see the browser — wait up to 5 min for them to enter OTP
+                    print(
+                        "  OTP required — enter the code in the browser window...",
+                        file=sys.stderr,
+                    )
+                    for _ in range(60):  # 60 × 5s = 5 min
+                        if gc_token:
+                            break
+                        page.wait_for_timeout(5000)
+                else:
+                    browser.close()
+                    raise RuntimeError(
+                        "GameChanger requires a one-time verification code.\n"
+                        "Set GC_TOKEN in ~/.gc/.env to skip Playwright login:\n"
+                        "  1. Open web.gc.com in your browser and log in\n"
+                        "  2. DevTools → Network → any api.team-manager.gc.com request\n"
+                        "  3. Copy the 'gc-token' request header value\n"
+                        "  4. Add to ~/.gc/.env:  GC_TOKEN=\"<paste here>\""
+                    )
         except RuntimeError:
             raise
         except Exception as e:
