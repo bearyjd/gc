@@ -236,31 +236,59 @@ def _playwright_login(
             page.click('button:has-text("Sign in")')
 
             if visible:
-                # Visible mode: wait up to 5 min for a VERIFIED token.
-                # GC fires API calls during the OTP page load that contain a
-                # pre-auth token — we must verify before accepting so we don't
-                # close the browser before the user enters their OTP code.
+                # Visible mode: wait for the user to complete login + OTP,
+                # then navigate to /home to force authenticated API calls.
+                #
+                # We do NOT try to intercept tokens during the login/OTP flow
+                # because GC's SPA may not call api.team-manager.gc.com until
+                # the home page loads.
                 print(
-                    "  Waiting for login (enter OTP in browser if prompted)...",
+                    "  Browser open — log in and enter the OTP code when prompted.",
                     file=sys.stderr,
                 )
-                for _ in range(60):  # 60 × 5s = 5 min
-                    if gc_token:
-                        test_session = _make_session(gc_token, gc_device_id)
+                # Wait up to 5 min for GC to redirect away from the login/OTP page
+                try:
+                    page.wait_for_url(
+                        lambda url: "login" not in url and "verify" not in url,
+                        timeout=300_000,
+                    )
+                except Exception:
+                    pass  # timed out — try to proceed anyway
+
+                # Navigate to home to trigger authenticated API calls
+                try:
+                    current_url = page.url
+                except Exception:
+                    current_url = ""
+
+                if current_url and "login" not in current_url:
+                    print("  Login complete — capturing token...", file=sys.stderr)
+                    page.goto("https://web.gc.com/home", timeout=30_000)
+                    page.wait_for_timeout(5_000)
+
+                    # Fallback: read token directly from browser storage if
+                    # network interception didn't capture it from headers
+                    if not gc_token:
                         try:
-                            resp = test_session.get(
-                                "https://api.team-manager.gc.com/me/teams",
-                                timeout=10,
-                            )
-                            if resp.status_code == 200:
-                                break  # valid post-OTP token — done
+                            raw = page.evaluate("""() => {
+                                for (const store of [localStorage, sessionStorage]) {
+                                    for (let i = 0; i < store.length; i++) {
+                                        const val = store.getItem(store.key(i));
+                                        if (val && val.startsWith('eyJ') && val.length > 200)
+                                            return val;
+                                        try {
+                                            const s = JSON.stringify(JSON.parse(val));
+                                            const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
+                                            if (m) return m[1];
+                                        } catch (e) {}
+                                    }
+                                }
+                                return null;
+                            }""")
+                            if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                                gc_token = raw
                         except Exception:
                             pass
-                        # Token is pre-OTP / invalid — reset so handle_response
-                        # can capture the next (real) token after OTP entry.
-                        gc_token = None
-                        gc_device_id = None
-                    page.wait_for_timeout(5000)
             else:
                 page.wait_for_timeout(8000)
                 # Check whether OTP is blocking headless completion
