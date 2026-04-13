@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40"]
-dev = ["pytest>=7", "pytest-cov"]
+dev = ["pytest>=7", "pytest-cov", "playwright>=1.40"]
 
 [project.scripts]
 gc = "gc_cli.cli:main"
