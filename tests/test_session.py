@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 import requests
@@ -10,6 +10,7 @@ import requests
 # We import only the pure functions — no Playwright triggered at import time
 from gc_cli.session import (
     SESSION_TTL_MINUTES,
+    _fetch_gc_otp,
     _get_credentials,
     _load_cached_session,
     _save_session,
@@ -138,3 +139,183 @@ def test_get_session_runs_playwright_when_cache_missing(tmp_gc_dir, monkeypatch)
         result = get_session(verbose=False)
 
     assert result.headers.get("gc-token") == "fresh-token"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_gc_otp
+# ---------------------------------------------------------------------------
+
+def _gog_result(subjects: list[str]) -> MagicMock:
+    """Build a mock subprocess.CompletedProcess with gog gmail JSON output."""
+    messages = [{"subject": s} for s in subjects]
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = json.dumps(messages)
+    return result
+
+
+def test_fetch_gc_otp_returns_code_from_subject():
+    """Returns 6-digit code found in gog output subject on first try."""
+    with patch("subprocess.run", return_value=_gog_result(["Your GC code is 123456"])):
+        code = _fetch_gc_otp(timeout_sec=30)
+    assert code == "123456"
+
+
+def test_fetch_gc_otp_retries_and_returns_code_on_second_attempt():
+    """Retries every 5s and returns code when it eventually arrives."""
+    results = [
+        _gog_result([]),                                    # first poll: no email yet
+        _gog_result(["GameChanger verification: 654321"]),  # second poll: code arrives
+    ]
+    with patch("subprocess.run", side_effect=results), \
+         patch("time.sleep") as mock_sleep, \
+         patch("time.monotonic", side_effect=[0.0, 0.0, 0.0, 60.0]):
+        code = _fetch_gc_otp(timeout_sec=120)
+
+    assert code == "654321"
+    mock_sleep.assert_called_with(5)
+
+
+def test_fetch_gc_otp_raises_runtime_error_after_timeout():
+    """Raises RuntimeError(containing timeout duration) when code never arrives."""
+    with patch("subprocess.run", return_value=_gog_result([])), \
+         patch("time.sleep"), \
+         patch("time.monotonic", side_effect=[0.0, 0.0, 31.0]):
+        with pytest.raises(RuntimeError, match="GC OTP not received within 30"):
+            _fetch_gc_otp(timeout_sec=30)
+
+
+def test_fetch_gc_otp_includes_account_flag_when_gog_account_set(monkeypatch):
+    """Passes --account <GOG_ACCOUNT> when that env var is set."""
+    monkeypatch.setenv("GOG_ACCOUNT", "myacct@gmail.com")
+
+    with patch("subprocess.run", return_value=_gog_result(["code 999888"])) as mock_run:
+        _fetch_gc_otp(timeout_sec=30)
+
+    cmd = mock_run.call_args[0][0]
+    assert "--account" in cmd
+    assert "myacct@gmail.com" in cmd
+
+
+def test_fetch_gc_otp_omits_account_flag_when_env_not_set(monkeypatch):
+    """Does not include --account when GOG_ACCOUNT is absent."""
+    monkeypatch.delenv("GOG_ACCOUNT", raising=False)
+
+    with patch("subprocess.run", return_value=_gog_result(["code 111222"])) as mock_run:
+        _fetch_gc_otp(timeout_sec=30)
+
+    cmd = mock_run.call_args[0][0]
+    assert "--account" not in cmd
+
+
+def test_fetch_gc_otp_raises_runtime_error_if_gog_missing():
+    """Raises RuntimeError with 'gog' in the message if gog is not on PATH."""
+    with patch("subprocess.run", side_effect=FileNotFoundError("gog")):
+        with pytest.raises(RuntimeError, match="gog"):
+            _fetch_gc_otp(timeout_sec=30)
+
+
+# ---------------------------------------------------------------------------
+# _playwright_login — headless OTP auto-entry
+# ---------------------------------------------------------------------------
+
+def _make_playwright_mocks(
+    *,
+    otp_field_found: bool = False,
+    gc_token: str = "eyJ" + "a" * 250,
+) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock]:
+    """Return (mock_pw_cm, mock_browser, mock_context, mock_page)."""
+    mock_page = MagicMock()
+
+    if otp_field_found:
+        # URL stays on verify until OTP submitted, then moves to home
+        urls = ["https://web.gc.com/login/verify/otp"] * 3 + ["https://web.gc.com/home"]
+        type(mock_page).url = PropertyMock(side_effect=urls)
+        mock_page.wait_for_selector.return_value = MagicMock()  # OTP field found
+    else:
+        type(mock_page).url = PropertyMock(return_value="https://web.gc.com/home")
+        mock_page.wait_for_selector.side_effect = Exception("timeout")  # no OTP field
+
+    # Simulate the response handler being invoked with a real-looking API response
+    mock_api_response = MagicMock()
+    mock_api_response.url = "https://api.team-manager.gc.com/me/teams"
+    mock_api_response.request.all_headers.return_value = {
+        "gc-token": gc_token,
+        "gc-device-id": "dev-abc",
+    }
+
+    def capture_handler(event: str, handler) -> None:  # type: ignore[no-untyped-def]
+        if event == "response":
+            handler(mock_api_response)
+
+    mock_page.on.side_effect = capture_handler
+
+    mock_context = MagicMock()
+    mock_context.new_page.return_value = mock_page
+    mock_context.cookies.return_value = []
+    # Simulate storage_state writing the file so CONTEXT_PATH.chmod() doesn't fail
+    mock_context.storage_state.side_effect = lambda path=None, **kw: (
+        Path(path).write_text("{}") if path else None
+    )
+
+    mock_browser = MagicMock()
+    mock_browser.new_context.return_value = mock_context
+
+    mock_pw = MagicMock()
+    mock_pw.chromium.launch.return_value = mock_browser
+
+    mock_pw_cm = MagicMock()
+    mock_pw_cm.__enter__ = MagicMock(return_value=mock_pw)
+    mock_pw_cm.__exit__ = MagicMock(return_value=False)
+
+    return mock_pw_cm, mock_browser, mock_context, mock_page
+
+
+def test_playwright_login_headless_calls_fetch_otp_when_otp_field_detected(tmp_gc_dir, monkeypatch):
+    """Headless _playwright_login calls _fetch_gc_otp when OTP input is present on page."""
+    monkeypatch.setattr("gc_cli.session.SESSION_DIR", tmp_gc_dir / "sessions")
+    monkeypatch.setattr("gc_cli.session.CONTEXT_PATH", tmp_gc_dir / "sessions" / "ctx.json")
+
+    mock_pw_cm, _, _, mock_page = _make_playwright_mocks(otp_field_found=True)
+
+    # sync_playwright is a lazy import inside _playwright_login; patch where it's imported from
+    with patch("playwright.sync_api.sync_playwright", return_value=mock_pw_cm), \
+         patch("gc_cli.session._fetch_gc_otp", return_value="123456") as mock_otp:
+        from gc_cli.session import _playwright_login
+        _playwright_login("user@gc.com", "pass", visible=False)
+
+    mock_otp.assert_called_once()
+
+
+def test_playwright_login_headless_fills_otp_code_into_page(tmp_gc_dir, monkeypatch):
+    """Headless _playwright_login types the fetched OTP code into the OTP input field."""
+    monkeypatch.setattr("gc_cli.session.SESSION_DIR", tmp_gc_dir / "sessions")
+    monkeypatch.setattr("gc_cli.session.CONTEXT_PATH", tmp_gc_dir / "sessions" / "ctx.json")
+
+    mock_pw_cm, _, _, mock_page = _make_playwright_mocks(otp_field_found=True)
+
+    with patch("playwright.sync_api.sync_playwright", return_value=mock_pw_cm), \
+         patch("gc_cli.session._fetch_gc_otp", return_value="987654"):
+        from gc_cli.session import _playwright_login
+        _playwright_login("user@gc.com", "pass", visible=False)
+
+    # Verify that page.fill was called with "987654" for some selector
+    fill_calls = [str(c) for c in mock_page.fill.call_args_list]
+    assert any("987654" in c for c in fill_calls), (
+        f"Expected '987654' to be typed into OTP field. fill calls: {fill_calls}"
+    )
+
+
+def test_playwright_login_headless_skips_otp_when_no_otp_field(tmp_gc_dir, monkeypatch):
+    """Headless _playwright_login does NOT call _fetch_gc_otp when no OTP field is present."""
+    monkeypatch.setattr("gc_cli.session.SESSION_DIR", tmp_gc_dir / "sessions")
+    monkeypatch.setattr("gc_cli.session.CONTEXT_PATH", tmp_gc_dir / "sessions" / "ctx.json")
+
+    mock_pw_cm, _, _, _ = _make_playwright_mocks(otp_field_found=False)
+
+    with patch("playwright.sync_api.sync_playwright", return_value=mock_pw_cm), \
+         patch("gc_cli.session._fetch_gc_otp") as mock_otp:
+        from gc_cli.session import _playwright_login
+        _playwright_login("user@gc.com", "pass", visible=False)
+
+    mock_otp.assert_not_called()

@@ -8,7 +8,10 @@ Playwright is a lazy import — only loaded when a real login is needed.
 import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -134,6 +137,65 @@ def _make_session(gc_token: str, gc_device_id: str | None = None) -> requests.Se
         headers["gc-device-id"] = gc_device_id
     session.headers.update(headers)
     return session
+
+
+def _fetch_gc_otp(timeout_sec: int = 120) -> str:
+    """Poll Gmail via gog for a GameChanger OTP email.
+
+    Calls ``gog gmail search`` every 5 s until a 6-digit code is found in an
+    email subject from gamechanger-noreply@info.gc.com or timeout_sec elapses.
+
+    Passes ``--account <GOG_ACCOUNT>`` when that env var is set (mirrors
+    existing _run_gog convention). Sets GOG_KEYRING_PASSWORD="" so the
+    subprocess does not block waiting for a keyring prompt on headless systems.
+
+    Returns the 6-digit code as a string.
+    Raises RuntimeError on timeout or if gog is not installed.
+    """
+    account = os.environ.get("GOG_ACCOUNT")
+    if account:
+        cmd = [
+            "gog", "--account", account,
+            "gmail", "search",
+            "from:gamechanger-noreply@info.gc.com newer_than:5m",
+            "-j", "--results-only", "--no-input",
+        ]
+    else:
+        cmd = [
+            "gog", "gmail", "search",
+            "from:gamechanger-noreply@info.gc.com newer_than:5m",
+            "-j", "--results-only", "--no-input",
+        ]
+
+    env = os.environ.copy()
+    env.setdefault("GOG_KEYRING_PASSWORD", "")
+
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "gog is not installed or not on PATH. "
+                "Install gog to enable auto-OTP fetching from Gmail."
+            )
+
+        if result.returncode == 0:
+            try:
+                messages = json.loads(result.stdout)
+                for msg in messages:
+                    subject = msg.get("subject", "")
+                    match = re.search(r"\b(\d{6})\b", subject)
+                    if match:
+                        return match.group(1)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        time.sleep(5)
+
+    raise RuntimeError(f"GC OTP not received within {timeout_sec}s")
 
 
 def _try_context_login(verbose: bool = False) -> requests.Session | None:
@@ -290,21 +352,40 @@ def _playwright_login(
                         except Exception:
                             pass
             else:
-                page.wait_for_timeout(8000)
-                # Check whether OTP is blocking headless completion
-                visible_text = page.evaluate("() => document.body.innerText")
-                if "sent a code" in visible_text.lower() or (
-                    "code" in visible_text.lower() and "sign in" in visible_text.lower()
-                ):
-                    browser.close()
-                    raise RuntimeError(
-                        "GameChanger requires a one-time verification code.\n"
-                        "Set GC_TOKEN in ~/.gc/.env to skip Playwright login:\n"
-                        "  1. Open web.gc.com in your browser and log in\n"
-                        "  2. DevTools → Network → any api.team-manager.gc.com request\n"
-                        "  3. Copy the 'gc-token' request header value\n"
-                        "  4. Add to ~/.gc/.env:  GC_TOKEN=\"<paste here>\""
-                    )
+                # Headless auto-OTP: poll for OTP field, fetch code from Gmail,
+                # submit — no human interaction required.
+                _OTP_SELECTOR = (
+                    'input[autocomplete="one-time-code"], '
+                    'input[type="tel"], '
+                    'input[inputmode="numeric"]'
+                )
+                _deadline = time.monotonic() + 300  # 5-minute window
+                while time.monotonic() < _deadline:
+                    _cur_url = page.url
+                    if "login" not in _cur_url and "verify" not in _cur_url:
+                        break  # login completed without OTP
+                    try:
+                        page.wait_for_selector(_OTP_SELECTOR, timeout=10000)
+                    except Exception:
+                        pass  # OTP field not present yet — keep polling
+                    else:
+                        # OTP input detected — fetch code from Gmail and fill it
+                        code = _fetch_gc_otp(timeout_sec=120)
+                        page.fill(_OTP_SELECTOR, code)
+                        page.click('button[type="submit"]')
+                        try:
+                            page.wait_for_url(
+                                lambda url: "login" not in url and "verify" not in url,
+                                timeout=60_000,
+                            )
+                        except Exception:
+                            pass
+                        break
+                    page.wait_for_timeout(5000)
+
+                # Navigate to /home to trigger authenticated API calls
+                page.goto("https://web.gc.com/home", timeout=30_000)
+                page.wait_for_timeout(5_000)
         except RuntimeError:
             raise
         except Exception as e:
