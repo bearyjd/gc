@@ -234,25 +234,24 @@ def _playwright_login(
 
             page.fill('input[name="password"]', password)
             page.click('button:has-text("Sign in")')
-            page.wait_for_timeout(8000)
 
-            # Check whether OTP is blocking completion
-            visible_text = page.evaluate("() => document.body.innerText")
-            otp_required = "sent a code" in visible_text.lower() or (
-                "code" in visible_text.lower() and "sign in" in visible_text.lower()
-            )
-            if otp_required:
-                if visible:
-                    # User can see the browser — wait up to 5 min for them to enter OTP
-                    print(
-                        "  OTP required — enter the code in the browser window...",
-                        file=sys.stderr,
-                    )
-                    for _ in range(60):  # 60 × 5s = 5 min
-                        if gc_token:
-                            break
-                        page.wait_for_timeout(5000)
-                else:
+            if visible:
+                # Visible mode: wait up to 5 min for token — user handles OTP themselves
+                print(
+                    "  Waiting for login (enter OTP in browser if prompted)...",
+                    file=sys.stderr,
+                )
+                for _ in range(60):  # 60 × 5s = 5 min
+                    if gc_token:
+                        break
+                    page.wait_for_timeout(5000)
+            else:
+                page.wait_for_timeout(8000)
+                # Check whether OTP is blocking headless completion
+                visible_text = page.evaluate("() => document.body.innerText")
+                if "sent a code" in visible_text.lower() or (
+                    "code" in visible_text.lower() and "sign in" in visible_text.lower()
+                ):
                     browser.close()
                     raise RuntimeError(
                         "GameChanger requires a one-time verification code.\n"
