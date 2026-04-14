@@ -108,10 +108,11 @@ gc summary --json
 
 - Logs in via headless Chromium (Playwright) using `GC_EMAIL` + `GC_PASSWORD`
 - Browser context saved to `~/.gc/sessions/playwright_context.json` after first login — restoring it skips OTP on all subsequent runs
+- If OTP is required in headless mode, automatically fetches the code from Gmail via `gog gmail search` — no human input needed
 - Captures `gc-token` and `gc-device-id` from API request headers (not localStorage)
 - Calls GameChanger's REST API (`https://api.team-manager.gc.com`)
 - Key endpoints: `/me/teams`, `/teams/{id}/schedule`, `/clips?kind=event&teamId={id}`
-- `gc sync` diffs events against `~/.gc/sync-state.json` and calls `gog` CLI for Google Calendar ops
+- `gc sync` diffs events against `~/.gc/sync-state-{team_id}.json` (per-team) and calls `gog` CLI for Google Calendar ops
 - All status/debug output goes to stderr; `--json` output is clean on stdout
 
 ## File layout
@@ -120,7 +121,7 @@ gc summary --json
 ~/.gc/
   .env              # GC_EMAIL, GC_PASSWORD, GC_CALENDAR_ID (0600)
   teams.json        # [{id, name, sport, ...}] — team IDs to track
-  sync-state.json   # GC event ID → {gcal_event_id, fingerprint, ...}
+  sync-state-{team_id}.json  # per-team: GC event ID → {gcal_event_id, fingerprint, ...}
   sessions/
     playwright_context.json  # saved browser state — restores login without OTP (auto-managed)
     *.json                   # per-email session cache (60-min TTL)
@@ -131,6 +132,9 @@ gc summary --json
 `gc-token` is a short-lived JWT. The systemd timer refreshes it every 45 minutes
 by restoring the saved Playwright browser context — the same way your real browser
 silently renews its session. No OTP required after the first login.
+
+If the saved context expires and GameChanger challenges with an OTP, the CLI
+fetches the code automatically from Gmail via `gog` — the timer stays zero-touch.
 
 ### Install on LXC
 
