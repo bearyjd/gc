@@ -260,7 +260,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
             # expired. Wait up to 15s for the email input to appear; if it does, re-auth.
             page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
             try:
-                page.wait_for_selector('input[type="email"]', timeout=15000)
+                page.wait_for_selector('input[type="email"]', timeout=25000)
                 needs_reauth = True
             except Exception:
                 needs_reauth = False  # login form never appeared → session is valid
