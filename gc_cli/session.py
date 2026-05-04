@@ -13,7 +13,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -199,36 +199,40 @@ def _make_session(gc_token: str, gc_device_id: str | None = None) -> requests.Se
 
 
 def _fetch_gc_otp(timeout_sec: int = 120) -> str:
-    """Poll Gmail via gog for a GameChanger OTP email.
+    """Poll Gmail via gog for a fresh GameChanger OTP email.
 
-    Calls ``gog gmail search`` every 5 s until a 6-digit code is found in an
-    email subject from gamechanger-noreply@info.gc.com or timeout_sec elapses.
+    Calls ``gog gmail search`` every 5 s and returns the 6-digit code from
+    the subject of any matching email that arrived **after** this call
+    started. Older codes are skipped — a stale OTP from a previous run
+    silently fails the SPA's OTP form, so dropping them is the difference
+    between a working refresh and a hung browser.
 
-    Passes ``--account <GOG_ACCOUNT>`` when that env var is set (mirrors
-    existing _run_gog convention). Sets GOG_KEYRING_PASSWORD="" so the
-    subprocess does not block waiting for a keyring prompt on headless systems.
+    Uses ``--timezone UTC`` so message dates parse unambiguously. Passes
+    ``--account <GOG_ACCOUNT>`` when that env var is set. Sets
+    ``GOG_KEYRING_PASSWORD=""`` so the subprocess does not block on a
+    keyring prompt.
 
     Returns the 6-digit code as a string.
     Raises RuntimeError on timeout or if gog is not installed.
     """
     account = os.environ.get("GOG_ACCOUNT")
+    base = ["gog"]
     if account:
-        cmd = [
-            "gog", "--account", account,
-            "gmail", "search",
-            "from:gamechanger-noreply@info.gc.com newer_than:5m",
-            "-j", "--results-only", "--no-input",
-        ]
-    else:
-        cmd = [
-            "gog", "gmail", "search",
-            "from:gamechanger-noreply@info.gc.com newer_than:5m",
-            "-j", "--results-only", "--no-input",
-        ]
+        base += ["--account", account]
+    cmd = base + [
+        "gmail", "search",
+        "from:gamechanger-noreply@info.gc.com newer_than:5m",
+        "-j", "--results-only", "--no-input",
+        "--timezone", "UTC",
+    ]
 
     env = os.environ.copy()
     env.setdefault("GOG_KEYRING_PASSWORD", "")
 
+    # Reject OTPs that arrived before this call. 60-s slack absorbs
+    # gog's minute-precision dates and any clock skew between container
+    # and Gmail.
+    started_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         try:
@@ -245,6 +249,8 @@ def _fetch_gc_otp(timeout_sec: int = 120) -> str:
             try:
                 messages = json.loads(result.stdout)
                 for msg in messages:
+                    if not _otp_is_fresh(msg.get("date"), started_at):
+                        continue
                     subject = msg.get("subject", "")
                     match = re.search(r"\b(\d{6})\b", subject)
                     if match:
@@ -255,6 +261,22 @@ def _fetch_gc_otp(timeout_sec: int = 120) -> str:
         time.sleep(5)
 
     raise RuntimeError(f"GC OTP not received within {timeout_sec}s")
+
+
+def _otp_is_fresh(date_str: str | None, started_at: datetime) -> bool:
+    """Return True iff date_str (UTC, gog format) is at or after started_at.
+
+    Defensively returns False when the date is missing or unparseable —
+    we'd rather time out than submit a stale code.
+    """
+    if not date_str:
+        return False
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(date_str, fmt) >= started_at
+        except ValueError:
+            continue
+    return False
 
 
 def _try_context_login(verbose: bool = False) -> requests.Session | None:
@@ -308,9 +330,11 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                 needs_reauth = False  # login form never appeared → session still valid
 
             if needs_reauth:
-                # JWT expired but device cookie saved → re-auth with email+password (no OTP)
+                # JWT expired but device cookie saved → re-auth with email+password.
+                # GC's /auth endpoint may still require MFA; poll for an OTP input
+                # and fill it from Gmail via gog if one appears.
                 if verbose:
-                    print("  Session expired — re-authenticating (no OTP)...", file=sys.stderr)
+                    print("  Session expired — re-authenticating...", file=sys.stderr)
                 try:
                     email, password = _get_credentials()
                     page.fill('input[type="email"]', email)
@@ -318,12 +342,39 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                     page.wait_for_selector('input[name="password"]', timeout=10000)
                     page.fill('input[name="password"]', password)
                     page.click('button:has-text("Sign in")')
-                    # Wait for login form to clear (auth completed in-place)
-                    page.wait_for_selector(
-                        'input[type="email"]', state="detached", timeout=60000
+
+                    _OTP_SELECTOR = (
+                        'input#code, '
+                        'input[name="code"], '
+                        'input[autocomplete="one-time-code"], '
+                        'input[type="tel"], '
+                        'input[inputmode="numeric"]'
                     )
-                    if verbose:
-                        print("  Re-authenticated (no OTP)", file=sys.stderr)
+                    try:
+                        page.wait_for_selector(_OTP_SELECTOR, timeout=15000)
+                    except Exception:
+                        if verbose:
+                            print("  Re-authenticated (no OTP)", file=sys.stderr)
+                    else:
+                        if verbose:
+                            print("  OTP required — fetching from Gmail via gog...", file=sys.stderr)
+                        code = _fetch_gc_otp(timeout_sec=120)
+                        page.fill(_OTP_SELECTOR, code)
+                        page.click('button[type="submit"]')
+                        if verbose:
+                            print("  OTP submitted", file=sys.stderr)
+
+                    # Wait for the SPA to redirect away from /login. This is the
+                    # signal that auth succeeded AND the user JWT was written to
+                    # storage — racing past it makes the next API calls fall back
+                    # to the client token.
+                    try:
+                        page.wait_for_url(
+                            lambda url: "login" not in url and "verify" not in url,
+                            timeout=60_000,
+                        )
+                    except Exception:
+                        pass  # fall through to /teams nav anyway
                 except Exception as e:
                     if verbose:
                         print(f"  Re-auth failed: {e}", file=sys.stderr)
