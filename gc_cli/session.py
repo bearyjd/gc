@@ -127,8 +127,32 @@ def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # typ
 
     page.on("response", handle_response)
     page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(15000)
     page.remove_listener("response", handle_response)
+
+    # Fallback: read gc-token from browser storage if network interception missed it
+    if not captured_token:
+        try:
+            raw = page.evaluate("""() => {
+                for (const store of [localStorage, sessionStorage]) {
+                    for (let i = 0; i < store.length; i++) {
+                        const val = store.getItem(store.key(i));
+                        if (val && val.startsWith('eyJ') && val.length > 200)
+                            return val;
+                        try {
+                            const s = JSON.stringify(JSON.parse(val));
+                            const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
+                            if (m) return m[1];
+                        } catch (e) {}
+                    }
+                }
+                return null;
+            }""")
+            if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                captured_token.append(raw)
+        except Exception:
+            pass
+
     return (
         captured_token[0] if captured_token else None,
         captured_device[0] if captured_device else None,
@@ -303,8 +327,7 @@ def _playwright_login(
             page.wait_for_selector('input[type="email"]', timeout=30000)
             page.fill('input[type="email"]', email)
             page.click('button:has-text("Continue")')
-            page.wait_for_url("**/login**", timeout=15000)
-            page.wait_for_timeout(500)
+            page.wait_for_selector('input[name="password"]', timeout=15000)
 
             page.fill('input[name="password"]', password)
             page.click('button:has-text("Sign in")')
@@ -397,17 +420,36 @@ def _playwright_login(
 
                 # Navigate to /home to trigger authenticated API calls
                 page.goto("https://web.gc.com/home", timeout=60_000, wait_until="domcontentloaded")
-                page.wait_for_timeout(5_000)
+                page.wait_for_timeout(15_000)
+
+                # Fallback: read gc-token from browser storage if network interception missed it
+                if not gc_token:
+                    try:
+                        raw = page.evaluate("""() => {
+                            for (const store of [localStorage, sessionStorage]) {
+                                for (let i = 0; i < store.length; i++) {
+                                    const val = store.getItem(store.key(i));
+                                    if (val && val.startsWith('eyJ') && val.length > 200)
+                                        return val;
+                                    try {
+                                        const s = JSON.stringify(JSON.parse(val));
+                                        const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
+                                        if (m) return m[1];
+                                    } catch (e) {}
+                                }
+                            }
+                            return null;
+                        }""")
+                        if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                            gc_token = raw
+                    except Exception:
+                        pass
         except RuntimeError:
             raise
         except Exception as e:
             browser.close()
             hint = " Try --visible to debug." if not visible else ""
             raise RuntimeError(f"GameChanger login failed: {e}.{hint}") from e
-
-        # Wait a bit more for authenticated API calls to fire
-        if not gc_token:
-            page.wait_for_timeout(4000)
 
         # Save browser context so future calls skip OTP
         SESSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
