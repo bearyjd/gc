@@ -255,10 +255,37 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
             context = browser.new_context(storage_state=str(CONTEXT_PATH))
             page = context.new_page()
 
+            # Check if the saved session is still authenticated
+            page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+
+            if "login" in page.url:
+                # JWT expired but device cookie saved → re-auth with email+password (no OTP)
+                if verbose:
+                    print("  Session expired — re-authenticating (no OTP)...", file=sys.stderr)
+                try:
+                    email, password = _get_credentials()
+                    page.wait_for_selector('input[type="email"]', timeout=10000)
+                    page.fill('input[type="email"]', email)
+                    page.click('button:has-text("Continue")')
+                    page.wait_for_selector('input[name="password"]', timeout=10000)
+                    page.fill('input[name="password"]', password)
+                    page.click('button:has-text("Sign in")')
+                    page.wait_for_url(
+                        lambda url: "login" not in url and "verify" not in url,
+                        timeout=60000,
+                    )
+                    if verbose:
+                        print("  Re-authenticated via device cookie (no OTP)", file=sys.stderr)
+                except Exception as e:
+                    if verbose:
+                        print(f"  Re-auth failed: {e}", file=sys.stderr)
+                    browser.close()
+                    return None
+
             gc_token, gc_device_id = _capture_gc_headers_from_page(page)
 
             # Refresh saved context (keeps cookies current)
-
             SESSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
             context.storage_state(path=str(CONTEXT_PATH))
             CONTEXT_PATH.chmod(0o600)
@@ -566,5 +593,12 @@ def get_session(verbose: bool = True, visible: bool = False) -> requests.Session
 
     if verbose:
         print("  Login successful, browser context saved", file=sys.stderr)
+
+    # Persist token to ~/.gc/.env so subsequent runs skip Playwright
+    fresh_token = session.headers.get("gc-token", "")
+    if fresh_token:
+        _update_env_token(fresh_token, session.headers.get("gc-device-id") or None)
+        if verbose:
+            print("  Token written to ~/.gc/.env", file=sys.stderr)
 
     return session
