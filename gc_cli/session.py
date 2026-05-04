@@ -256,11 +256,13 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
             page = context.new_page()
 
             # Check if the saved session is still authenticated.
-            # React Router redirect to /login happens client-side ~4-8s after domcontentloaded.
+            # The SPA renders the login form in-place (URL stays /home) when the JWT is
+            # expired — detect by waiting for the email input to appear.
             page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
             page.wait_for_timeout(8000)
 
-            if "login" in page.url:
+            needs_reauth = page.locator('input[type="email"]').count() > 0
+            if needs_reauth:
                 # JWT expired but device cookie saved → re-auth with email+password (no OTP)
                 if verbose:
                     print("  Session expired — re-authenticating (no OTP)...", file=sys.stderr)
@@ -272,9 +274,9 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                     page.wait_for_selector('input[name="password"]', timeout=10000)
                     page.fill('input[name="password"]', password)
                     page.click('button:has-text("Sign in")')
-                    page.wait_for_url(
-                        lambda url: "login" not in url and "verify" not in url,
-                        timeout=60000,
+                    # SPA doesn't change URL on auth; wait for login form to disappear
+                    page.wait_for_selector(
+                        'input[type="email"]', state="detached", timeout=60000
                     )
                     if verbose:
                         print("  Re-authenticated via device cookie (no OTP)", file=sys.stderr)
