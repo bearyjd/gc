@@ -249,21 +249,38 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
 
     gc_token: str | None = None
     gc_device_id: str | None = None
+    captured_token: list[str] = []
+    captured_device: list[str] = []
+
+    def _handle(response) -> None:  # type: ignore[no-untyped-def]
+        if "api.team-manager.gc.com" not in response.url:
+            return
+        try:
+            h = response.request.all_headers()
+            t = h.get("gc-token", "")
+            if t and t.startswith("eyJ") and len(t) > 200 and not captured_token:
+                captured_token.append(t)
+            d = h.get("gc-device-id", "")
+            if d and not captured_device:
+                captured_device.append(d)
+        except Exception:
+            pass
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
             context = browser.new_context(storage_state=str(CONTEXT_PATH))
             page = context.new_page()
+            # Handler active from the start so re-auth API calls are also captured
+            page.on("response", _handle)
 
-            # Check if the saved session is still authenticated.
-            # The SPA renders the login form in-place (URL stays /home) when the JWT is
-            # expired. Wait up to 15s for the email input to appear; if it does, re-auth.
+            # Navigate to home and detect if the JWT has expired (login form in-place)
             page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
             try:
                 page.wait_for_selector('input[type="email"]', timeout=25000)
                 needs_reauth = True
             except Exception:
-                needs_reauth = False  # login form never appeared → session is valid
+                needs_reauth = False  # login form never appeared → session still valid
 
             if needs_reauth:
                 # JWT expired but device cookie saved → re-auth with email+password (no OTP)
@@ -271,25 +288,51 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                     print("  Session expired — re-authenticating (no OTP)...", file=sys.stderr)
                 try:
                     email, password = _get_credentials()
-                    page.wait_for_selector('input[type="email"]', timeout=10000)
                     page.fill('input[type="email"]', email)
                     page.click('button:has-text("Continue")')
                     page.wait_for_selector('input[name="password"]', timeout=10000)
                     page.fill('input[name="password"]', password)
                     page.click('button:has-text("Sign in")')
-                    # SPA doesn't change URL on auth; wait for login form to disappear
+                    # Wait for login form to clear (auth completed in-place)
                     page.wait_for_selector(
                         'input[type="email"]', state="detached", timeout=60000
                     )
                     if verbose:
-                        print("  Re-authenticated via device cookie (no OTP)", file=sys.stderr)
+                        print("  Re-authenticated (no OTP)", file=sys.stderr)
                 except Exception as e:
                     if verbose:
                         print(f"  Re-auth failed: {e}", file=sys.stderr)
                     browser.close()
                     return None
 
-            gc_token, gc_device_id = _capture_gc_headers_from_page(page)
+            # Wait for the SPA's post-auth API calls — stay on current page (no reload)
+            page.wait_for_timeout(15000)
+
+            # Fallback: read gc-token from browser storage if network interception missed it
+            if not captured_token:
+                try:
+                    raw = page.evaluate("""() => {
+                        for (const store of [localStorage, sessionStorage]) {
+                            for (let i = 0; i < store.length; i++) {
+                                const val = store.getItem(store.key(i));
+                                if (val && val.startsWith('eyJ') && val.length > 200)
+                                    return val;
+                                try {
+                                    const s = JSON.stringify(JSON.parse(val));
+                                    const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
+                                    if (m) return m[1];
+                                } catch (e) {}
+                            }
+                        }
+                        return null;
+                    }""")
+                    if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                        captured_token.append(raw)
+                except Exception:
+                    pass
+
+            gc_token = captured_token[0] if captured_token else None
+            gc_device_id = captured_device[0] if captured_device else None
 
             # Refresh saved context (keeps cookies current)
             SESSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
