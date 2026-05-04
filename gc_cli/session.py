@@ -126,7 +126,7 @@ def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # typ
             pass
 
     page.on("response", handle_response)
-    page.goto("https://web.gc.com/home", timeout=30000)
+    page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
     page.remove_listener("response", handle_response)
     return (
@@ -234,6 +234,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
             gc_token, gc_device_id = _capture_gc_headers_from_page(page)
 
             # Refresh saved context (keeps cookies current)
+
             SESSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
             context.storage_state(path=str(CONTEXT_PATH))
             CONTEXT_PATH.chmod(0o600)
@@ -298,7 +299,8 @@ def _playwright_login(
         page.on("response", handle_response)
 
         try:
-            page.goto("https://web.gc.com/", timeout=30000)
+            page.goto("https://web.gc.com/", timeout=60000, wait_until="domcontentloaded")
+            page.wait_for_selector('input[type="email"]', timeout=30000)
             page.fill('input[type="email"]', email)
             page.click('button:has-text("Continue")')
             page.wait_for_url("**/login**", timeout=15000)
@@ -335,7 +337,7 @@ def _playwright_login(
 
                 if current_url and "login" not in current_url:
                     print("  Login complete — capturing token...", file=sys.stderr)
-                    page.goto("https://web.gc.com/home", timeout=30_000)
+                    page.goto("https://web.gc.com/home", timeout=60_000, wait_until="domcontentloaded")
                     page.wait_for_timeout(5_000)
 
                     # Fallback: read token directly from browser storage if
@@ -394,7 +396,7 @@ def _playwright_login(
                     page.wait_for_timeout(5000)
 
                 # Navigate to /home to trigger authenticated API calls
-                page.goto("https://web.gc.com/home", timeout=30_000)
+                page.goto("https://web.gc.com/home", timeout=60_000, wait_until="domcontentloaded")
                 page.wait_for_timeout(5_000)
         except RuntimeError:
             raise
