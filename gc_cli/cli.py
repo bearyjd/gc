@@ -48,6 +48,25 @@ def _get_calendar_id() -> str | None:
     return env.get("GC_CALENDAR_ID")
 
 
+def _parse_gc_team_map(raw: str) -> dict[str, str]:
+    """Parse GC_TEAM_MAP env var into {team_id: child_label}.
+
+    Format: 'teamid:Child,teamid2:Child,...'
+    Malformed pairs (no colon, empty id) are skipped silently.
+    """
+    result: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        team_id, _, child = pair.partition(":")
+        team_id = team_id.strip()
+        child = child.strip()
+        if team_id:
+            result[team_id] = child
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -194,6 +213,12 @@ def cmd_sync(args: argparse.Namespace) -> None:
             team_name = team.get("name")
             child = team.get("child")  # optional field; absent = fall back to team name
             break
+
+    # GC_TEAM_MAP env var fallback for child labeling (existing convention)
+    # Format: "teamid:Child,teamid2:Child,..."
+    if not child:
+        team_map = _parse_gc_team_map(os.environ.get("GC_TEAM_MAP", ""))
+        child = team_map.get(team_id)
 
     print(f"  Fetching schedule for team {team_id}...", file=sys.stderr)
     events = client.get_schedule(team_id)
