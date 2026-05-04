@@ -23,6 +23,16 @@ SESSION_DIR = GC_DIR / "sessions"
 SESSION_TTL_MINUTES = 60
 CONTEXT_PATH = SESSION_DIR / "playwright_context.json"
 
+# Required for headless Chromium running as root inside containers (LXC/Docker).
+# --no-sandbox: root cannot use the Chromium sandbox.
+# --disable-blink-features=AutomationControlled: suppresses bot-detection header.
+# --disable-dev-shm-usage: avoids /dev/shm exhaustion in constrained environments.
+_CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+]
+
 
 def _get_credentials() -> tuple[str, str]:
     """Load GC_EMAIL and GC_PASSWORD from env or ~/.gc/.env."""
@@ -217,7 +227,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
     gc_device_id: str | None = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
             context = browser.new_context(storage_state=str(CONTEXT_PATH))
             page = context.new_page()
 
@@ -282,7 +292,7 @@ def _playwright_login(
             pass
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not visible)
+        browser = p.chromium.launch(headless=not visible, args=_CHROMIUM_ARGS)
         context = browser.new_context()
         page = context.new_page()
         page.on("response", handle_response)
