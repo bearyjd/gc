@@ -5,6 +5,7 @@ Handles Playwright login and session caching. Modeled on ixl_cli/session.py.
 Playwright is a lazy import — only loaded when a real login is needed.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -18,6 +19,30 @@ from pathlib import Path
 import requests
 
 from gc_cli.client import GC_DIR
+
+
+def _is_user_token(token: str) -> bool:
+    """Return True iff token is a JWT with payload field ``type == "user"``.
+
+    GameChanger's SPA uses two JWT shapes on api.team-manager.gc.com:
+    a short-lived ``type: client`` device token (10-min TTL) issued during
+    bootstrap, and a ``type: user`` token issued post-login. Capturing the
+    client token by mistake breaks /me/teams (401) — so the capture path
+    must filter to user tokens only.
+    """
+    if not token or not token.startswith("eyJ"):
+        return False
+    parts = token.split(".")
+    if len(parts) < 2:
+        return False
+    try:
+        # JWT payload is base64url; pad to a multiple of 4 for stdlib decode.
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded).get("type") == "user"
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
 
 SESSION_DIR = GC_DIR / "sessions"
 SESSION_TTL_MINUTES = 60
@@ -117,7 +142,7 @@ def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # typ
         try:
             h = response.request.all_headers()
             t = h.get("gc-token", "")
-            if t and t.startswith("eyJ") and len(t) > 200 and not captured_token:
+            if _is_user_token(t) and not captured_token:
                 captured_token.append(t)
             d = h.get("gc-device-id", "")
             if d and not captured_device:
@@ -148,7 +173,7 @@ def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # typ
                 }
                 return null;
             }""")
-            if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+            if isinstance(raw, str) and _is_user_token(raw):
                 captured_token.append(raw)
         except Exception:
             pass
@@ -258,7 +283,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
         try:
             h = response.request.all_headers()
             t = h.get("gc-token", "")
-            if t and t.startswith("eyJ") and len(t) > 200 and not captured_token:
+            if _is_user_token(t) and not captured_token:
                 captured_token.append(t)
             d = h.get("gc-device-id", "")
             if d and not captured_device:
@@ -329,7 +354,7 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                         }
                         return null;
                     }""")
-                    if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                    if isinstance(raw, str) and _is_user_token(raw):
                         captured_token.append(raw)
                 except Exception:
                     pass
@@ -387,7 +412,7 @@ def _playwright_login(
         try:
             h = response.request.all_headers()
             t = h.get("gc-token", "")
-            if t and t.startswith("eyJ") and len(t) > 200 and not gc_token:
+            if _is_user_token(t) and not gc_token:
                 gc_token = t
             d = h.get("gc-device-id", "")
             if d and not gc_device_id:
@@ -461,7 +486,7 @@ def _playwright_login(
                                 }
                                 return null;
                             }""")
-                            if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                            if isinstance(raw, str) and _is_user_token(raw):
                                 gc_token = raw
                         except Exception:
                             pass
@@ -519,7 +544,7 @@ def _playwright_login(
                             }
                             return null;
                         }""")
-                        if raw and isinstance(raw, str) and raw.startswith("eyJ") and len(raw) > 200:
+                        if isinstance(raw, str) and _is_user_token(raw):
                             gc_token = raw
                     except Exception:
                         pass
