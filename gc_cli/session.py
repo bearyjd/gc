@@ -439,7 +439,7 @@ def _playwright_login(
 
                 if current_url and "login" not in current_url:
                     print("  Login complete — capturing token...", file=sys.stderr)
-                    page.goto("https://web.gc.com/home", timeout=60_000, wait_until="domcontentloaded")
+                    page.goto("https://web.gc.com/teams", timeout=60_000, wait_until="domcontentloaded")
                     page.wait_for_timeout(5_000)
 
                     # Fallback: read token directly from browser storage if
@@ -497,8 +497,8 @@ def _playwright_login(
                         break
                     page.wait_for_timeout(5000)
 
-                # Navigate to /home to trigger authenticated API calls
-                page.goto("https://web.gc.com/home", timeout=60_000, wait_until="domcontentloaded")
+                # Navigate to /teams to trigger authenticated API calls
+                page.goto("https://web.gc.com/teams", timeout=60_000, wait_until="domcontentloaded")
                 page.wait_for_timeout(15_000)
 
                 # Fallback: read gc-token from browser storage if network interception missed it

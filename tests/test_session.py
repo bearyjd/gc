@@ -231,10 +231,18 @@ def _make_playwright_mocks(
         # URL stays on verify until OTP submitted, then moves to home
         urls = ["https://web.gc.com/login/verify/otp"] * 3 + ["https://web.gc.com/home"]
         type(mock_page).url = PropertyMock(side_effect=urls)
-        mock_page.wait_for_selector.return_value = MagicMock()  # OTP field found
     else:
         type(mock_page).url = PropertyMock(return_value="https://web.gc.com/home")
-        mock_page.wait_for_selector.side_effect = Exception("timeout")  # no OTP field
+
+    # wait_for_selector: succeed for email/password, fail for OTP when not found
+    def _wfs(selector, **kwargs):
+        if "email" in selector or "password" in selector:
+            return MagicMock()
+        if otp_field_found:
+            return MagicMock()
+        raise Exception("timeout")
+
+    mock_page.wait_for_selector.side_effect = _wfs
 
     # Simulate the response handler being invoked with a real-looking API response
     mock_api_response = MagicMock()
