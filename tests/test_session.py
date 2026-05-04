@@ -15,6 +15,7 @@ from gc_cli.session import (
     _get_credentials,
     _is_user_token,
     _load_cached_session,
+    _otp_is_fresh,
     _save_session,
     _session_path,
     get_session,
@@ -187,9 +188,15 @@ def test_get_session_runs_playwright_when_cache_missing(tmp_gc_dir, monkeypatch)
 # _fetch_gc_otp
 # ---------------------------------------------------------------------------
 
-def _gog_result(subjects: list[str]) -> MagicMock:
-    """Build a mock subprocess.CompletedProcess with gog gmail JSON output."""
-    messages = [{"subject": s} for s in subjects]
+def _gog_result(subjects: list[str], dates: list[str] | None = None) -> MagicMock:
+    """Build a mock subprocess.CompletedProcess with gog gmail JSON output.
+
+    Default each message's date to a far-future timestamp so it always passes
+    the freshness check. Pass ``dates`` to test the staleness path.
+    """
+    if dates is None:
+        dates = ["2999-01-01 00:00:00"] * len(subjects)
+    messages = [{"subject": s, "date": d} for s, d in zip(subjects, dates)]
     result = MagicMock()
     result.returncode = 0
     result.stdout = json.dumps(messages)
@@ -255,6 +262,56 @@ def test_fetch_gc_otp_raises_runtime_error_if_gog_missing():
     with patch("subprocess.run", side_effect=FileNotFoundError("gog")):
         with pytest.raises(RuntimeError, match="gog"):
             _fetch_gc_otp(timeout_sec=30)
+
+
+def test_fetch_gc_otp_skips_stale_otp_and_waits_for_fresh_one():
+    """Stale OTPs (from before this call started) must be ignored — the SPA
+    rejects them silently and the caller would hang. Regression for the
+    'silently submits old code → auth fails' bug."""
+    stale = _gog_result(["Your GameChanger code is 111111"], ["2020-01-01 00:00:00"])
+    fresh = _gog_result(["Your GameChanger code is 222222"], ["2999-01-01 00:00:01"])
+    with patch("subprocess.run", side_effect=[stale, fresh]), \
+         patch("time.sleep"), \
+         patch("time.monotonic", side_effect=[0.0, 0.0, 5.0, 60.0]):
+        code = _fetch_gc_otp(timeout_sec=120)
+    assert code == "222222"
+
+
+def test_fetch_gc_otp_passes_timezone_utc():
+    """gog must be invoked with --timezone UTC so message dates parse unambiguously."""
+    with patch("subprocess.run", return_value=_gog_result(["code 123456"])) as mock_run:
+        _fetch_gc_otp(timeout_sec=30)
+    cmd = mock_run.call_args[0][0]
+    assert "--timezone" in cmd
+    assert "UTC" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _otp_is_fresh
+# ---------------------------------------------------------------------------
+
+def test_otp_is_fresh_accepts_future_date():
+    started = datetime(2026, 1, 1, 12, 0, 0)
+    assert _otp_is_fresh("2026-01-01 12:00:30", started) is True
+
+
+def test_otp_is_fresh_rejects_past_date():
+    started = datetime(2026, 1, 1, 12, 0, 0)
+    assert _otp_is_fresh("2026-01-01 11:59:00", started) is False
+
+
+def test_otp_is_fresh_rejects_missing_date():
+    """Missing date is treated as stale — fail closed rather than submit a guess."""
+    started = datetime(2026, 1, 1, 12, 0, 0)
+    assert _otp_is_fresh(None, started) is False
+    assert _otp_is_fresh("", started) is False
+
+
+def test_otp_is_fresh_handles_minute_precision():
+    """gog's default text format is minute-precision; parser accepts it."""
+    started = datetime(2026, 1, 1, 12, 0, 0)
+    assert _otp_is_fresh("2026-01-01 12:01", started) is True
+    assert _otp_is_fresh("2026-01-01 11:59", started) is False
 
 
 # ---------------------------------------------------------------------------
