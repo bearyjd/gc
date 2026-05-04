@@ -6,8 +6,11 @@ Public surface:
   save_state(state, gc_dir)
   event_fingerprint(event)                    → str (16-char hex)
   sync_team(events, calendar_id, gc_dir, dry_run) → SyncResult
+  _event_title(event, team_name, child)       → str
+  _event_description(event, team_name, child) → str
 """
 
+import fcntl
 import hashlib
 import json
 import os
@@ -24,6 +27,7 @@ from pathlib import Path
 
 SYNC_STATE_FILENAME = "sync-state.json"  # legacy single-team path
 SYNC_STATE_TEAM_TEMPLATE = "sync-state-{team_id}.json"
+SYNC_LOCK_TEMPLATE = "sync-state-{team_id}.lock"
 
 # gog calendar color IDs (from `gog calendar colors`)
 COLOR_GAME = "9"       # #5484ed blue
@@ -35,6 +39,16 @@ DURATION_DEFAULTS: dict[str, int] = {
     "game": 120,
     "practice": 90,
     "default": 60,
+}
+
+# Sport emoji map (keyed on lowercase sport name fragments)
+SPORT_EMOJI: dict[str, str] = {
+    "baseball": "⚾",
+    "softball": "🥎",
+    "soccer": "⚽",
+    "basketball": "🏀",
+    "football": "🏈",
+    "lacrosse": "🥍",
 }
 
 
@@ -106,14 +120,115 @@ def event_fingerprint(event: dict) -> str:
         event.get("opponent", ""),
         event.get("type", ""),
         event.get("location", ""),
+        event.get("home_away", ""),
+        event.get("notes", ""),
+        event.get("game_type", ""),
     ])
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def _event_summary(event: dict) -> str:
-    etype = event.get("type", "Event")
-    opponent = event.get("opponent", "").strip()
-    return f"{etype}: {opponent}" if opponent else etype
+def _sport_emoji(sport: str) -> str:
+    """Return emoji for a sport name, or empty string if unknown."""
+    s = sport.lower()
+    for fragment, emoji in SPORT_EMOJI.items():
+        if fragment in s:
+            return emoji
+    return ""
+
+
+def _event_type_label(event: dict) -> str:
+    """Return a human-readable event type label from event_type / game_type."""
+    etype = (event.get("type") or "").lower()
+    game_type = (event.get("game_type") or "").lower()
+    opponent = (event.get("opponent") or "").strip()
+    home_away = (event.get("home_away") or "").lower()
+
+    if "practice" in etype:
+        return "Practice"
+    if "scrimmage" in etype or "scrimmage" in game_type:
+        return "Scrimmage"
+    if "tournament" in etype or "tournament" in game_type:
+        return "Tournament"
+    if "game" in etype or opponent:
+        # Build "Game vs Eagles" or "Game @ Eagles"
+        if opponent:
+            connector = "vs" if "home" in home_away else "@"
+            return f"Game {connector} {opponent}"
+        return "Game"
+    # Fallback: capitalise whatever we have
+    return (event.get("type") or "Event").title()
+
+
+def _event_title(event: dict, team_name: str | None, child: str | None) -> str:
+    """Build a rich calendar event title.
+
+    Format: '<emoji> <child|team_name> — <type_label>[ (Home|Away)]'
+    Examples:
+      '⚾ Alex — Game vs Eagles (Home)'
+      'Tigers — Practice'
+      '⚽ Maya — Game @ Rockets (Away)'
+    """
+    sport = event.get("sport") or ""
+    emoji = _sport_emoji(sport)
+
+    label = child if child else (team_name or "")
+    type_label = _event_type_label(event)
+
+    # Trailing home/away parenthetical only for games with known home_away
+    home_away = (event.get("home_away") or "").lower()
+    etype = (event.get("type") or "").lower()
+    opponent = (event.get("opponent") or "").strip()
+    is_game = "game" in etype or bool(opponent)
+    if is_game and home_away in ("home", "away"):
+        type_label = f"{type_label} ({'Home' if home_away == 'home' else 'Away'})"
+
+    parts = []
+    if emoji:
+        parts.append(emoji)
+    if label:
+        parts.append(label)
+        parts.append("—")
+    parts.append(type_label)
+
+    return " ".join(parts)
+
+
+def _event_description(event: dict, team_name: str | None, child: str | None) -> str:
+    """Build a multi-line calendar event description with all 5Ws.
+
+    Omits lines whose value is empty. Always ends with gc_event_id footer.
+    """
+    lines: list[str] = []
+
+    def _add(label: str, value: str) -> None:
+        v = (value or "").strip()
+        if v:
+            lines.append(f"{label}: {v}")
+
+    _add("Child", child or "")
+    sport = event.get("sport") or ""
+    team_part = f"{team_name} ({sport})" if team_name and sport else (team_name or "")
+    _add("Team", team_part)
+
+    etype = event.get("type") or ""
+    game_type = event.get("game_type") or ""
+    type_val = f"{etype} / {game_type}" if etype and game_type else (etype or game_type)
+    _add("Type", type_val)
+
+    opponent = (event.get("opponent") or "").strip()
+    home_away = (event.get("home_away") or "").lower()
+    if opponent:
+        ha_label = f" ({home_away.title()})" if home_away in ("home", "away") else ""
+        _add("Opponent", f"{opponent}{ha_label}")
+
+    _add("Location", event.get("location_name") or event.get("location") or "")
+    _add("Address", event.get("location_address") or "")
+    _add("Notes", event.get("notes") or "")
+
+    gc_id = event.get("id") or ""
+    footer = f"\n— GameChanger event id: {gc_id}" if gc_id else ""
+
+    return "\n".join(lines) + footer
 
 
 def _event_color(event_type: str) -> str:
@@ -121,6 +236,15 @@ def _event_color(event_type: str) -> str:
     if "practice" in t:
         return COLOR_PRACTICE
     return COLOR_GAME  # default to blue for games and unknowns
+
+
+def _reminders_for_event(event: dict) -> list[str]:
+    """Return list of --reminder flag values for this event type."""
+    etype = (event.get("type") or "").lower()
+    if "practice" in etype:
+        return ["popup:1h"]
+    # Games (and anything else) get 1d + 1h
+    return ["popup:1d", "popup:1h"]
 
 
 def _iso_times(event: dict) -> tuple[str, str]:
@@ -219,6 +343,73 @@ def _parse_gcal_event_id(gog_output: str) -> str:
     return gog_output.strip()
 
 
+def _build_gog_create_args(
+    calendar_id: str,
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    description: str,
+    location: str,
+    color: str,
+    gc_id: str,
+    team_id: str | None,
+    reminders: list[str],
+    event: dict,
+) -> list[str]:
+    """Build the full argument list for `gog calendar create`."""
+    args = [
+        "calendar", "create", calendar_id,
+        "--summary", summary,
+        "--from", start_iso,
+        "--to", end_iso,
+        "--description", description,
+        "--event-color", color,
+        "--private-prop", f"gc_event_id={gc_id}",
+    ]
+    if team_id:
+        args += ["--private-prop", f"gc_team_id={team_id}"]
+    if location:
+        args += ["--location", location]
+    for reminder in reminders:
+        args += ["--reminder", reminder]
+    args += ["--no-input"]
+    return args
+
+
+def _build_gog_update_args(
+    calendar_id: str,
+    gcal_event_id: str,
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    description: str,
+    location: str,
+    color: str,
+    gc_id: str,
+    team_id: str | None,
+    reminders: list[str],
+    event: dict,
+) -> list[str]:
+    """Build the full argument list for `gog calendar update`."""
+    args = [
+        "calendar", "update", calendar_id, gcal_event_id,
+        "--summary", summary,
+        "--from", start_iso,
+        "--to", end_iso,
+        "--description", description,
+        "--event-color", color,
+        "--private-prop", f"gc_event_id={gc_id}",
+    ]
+    if team_id:
+        args += ["--private-prop", f"gc_team_id={team_id}"]
+    if location:
+        args += ["--location", location]
+    for reminder in reminders:
+        args += ["--reminder", reminder]
+    args += ["--no-input"]
+    return args
+
+
 # ---------------------------------------------------------------------------
 # Main sync logic
 # ---------------------------------------------------------------------------
@@ -229,12 +420,15 @@ def sync_team(
     gc_dir: Path,
     dry_run: bool = False,
     team_id: str | None = None,
+    team_name: str | None = None,
+    child: str | None = None,
 ) -> SyncResult:
     """Diff events against sync-state.json and call gog for each change.
 
     - new events     → gog calendar create
     - changed events → gog calendar update
-    - removed events → gog calendar update with [CANCELLED] prefix + grey color
+    - removed events → mark cancelled=True in state (soft-cancel); gog update with [CANCELLED] prefix
+    - soft-cancelled events that resurface → un-cancel and run UPDATE instead of CREATE
     """
     if not dry_run and not shutil.which("gog"):
         raise RuntimeError(
@@ -242,92 +436,134 @@ def sync_team(
             "See: https://gogcli.sh"
         )
 
-    state = load_state(gc_dir, team_id=team_id)
+    # File lock: block (don't fail) if another process holds the lock
+    lock_path: Path | None = None
+    lock_fh = None
+    if team_id and not dry_run:
+        lock_path = gc_dir / SYNC_LOCK_TEMPLATE.format(team_id=team_id)
+        lock_fh = open(lock_path, "w")  # noqa: WPS515
+
     result = SyncResult()
-    incoming = {e["id"]: e for e in events if e.get("id")}
 
-    # --- new and changed events ------------------------------------------
-    for gc_id, event in incoming.items():
-        fp = event_fingerprint(event)
-        summary = _event_summary(event)
-        start_iso, end_iso = _iso_times(event)
-        color = _event_color(event.get("type", ""))
+    try:
+        if lock_fh is not None:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)  # blocks until acquired
 
-        if gc_id not in state:
-            # New
-            print(f"  + CREATE  {summary} ({start_iso})", file=sys.stderr)
-            if not dry_run:
-                ok, out = _run_gog([
-                    "calendar", "create", calendar_id,
-                    "--summary", summary,
-                    "--from", start_iso,
-                    "--to", end_iso,
-                    "--event-color", color,
-                    "--no-input",
-                ])
-                if ok:
-                    gcal_id = _parse_gcal_event_id(out)
-                    state[gc_id] = {
-                        "gcal_event_id": gcal_id,
-                        "calendar_id": calendar_id,
-                        "fingerprint": fp,
-                        "summary": summary,
-                    }
-                    result.created.append(summary)
+        state = load_state(gc_dir, team_id=team_id)
+
+        incoming = {e["id"]: e for e in events if e.get("id")}
+
+        # --- new and changed events ------------------------------------------
+        for gc_id, event in incoming.items():
+            fp = event_fingerprint(event)
+            summary = _event_title(event, team_name, child)
+            description = _event_description(event, team_name, child)
+            start_iso, end_iso = _iso_times(event)
+            color = _event_color(event.get("type", ""))
+            location = (event.get("location") or "").strip()
+            reminders = _reminders_for_event(event)
+
+            existing = state.get(gc_id)
+            is_soft_cancelled = existing and existing.get("cancelled", False)
+
+            if existing is None:
+                # Truly new event
+                print(f"  + CREATE  {summary} ({start_iso})", file=sys.stderr)
+                if not dry_run:
+                    ok, out = _run_gog(_build_gog_create_args(
+                        calendar_id, summary, start_iso, end_iso,
+                        description, location, color, gc_id, team_id, reminders, event,
+                    ))
+                    if ok:
+                        gcal_id = _parse_gcal_event_id(out)
+                        state[gc_id] = {
+                            "gcal_event_id": gcal_id,
+                            "calendar_id": calendar_id,
+                            "fingerprint": fp,
+                            "summary": summary,
+                        }
+                        result.created.append(summary)
+                    else:
+                        print(f"  ERROR create {summary}: {out}", file=sys.stderr)
+                        result.errors.append(f"create {summary}: {out}")
                 else:
-                    print(f"  ERROR create {summary}: {out}", file=sys.stderr)
-                    result.errors.append(f"create {summary}: {out}")
-            else:
-                result.created.append(summary)
+                    result.created.append(summary)
 
-        elif state[gc_id]["fingerprint"] != fp:
-            # Changed
-            gcal_event_id = state[gc_id]["gcal_event_id"]
-            print(f"  ~ UPDATE  {summary} ({start_iso})", file=sys.stderr)
+            elif is_soft_cancelled:
+                # Event disappeared previously but has resurfaced — un-cancel via UPDATE
+                gcal_event_id = existing["gcal_event_id"]
+                print(f"  ^ UNCANCEL {summary} ({start_iso})", file=sys.stderr)
+                if not dry_run:
+                    ok, out = _run_gog(_build_gog_update_args(
+                        calendar_id, gcal_event_id, summary, start_iso, end_iso,
+                        description, location, color, gc_id, team_id, reminders, event,
+                    ))
+                    if ok:
+                        state[gc_id] = {
+                            "gcal_event_id": gcal_event_id,
+                            "calendar_id": calendar_id,
+                            "fingerprint": fp,
+                            "summary": summary,
+                        }
+                        result.updated.append(summary)
+                    else:
+                        print(f"  ERROR uncancel {summary}: {out}", file=sys.stderr)
+                        result.errors.append(f"uncancel {summary}: {out}")
+                else:
+                    result.updated.append(summary)
+
+            elif existing["fingerprint"] != fp:
+                # Event changed
+                gcal_event_id = existing["gcal_event_id"]
+                print(f"  ~ UPDATE  {summary} ({start_iso})", file=sys.stderr)
+                if not dry_run:
+                    ok, out = _run_gog(_build_gog_update_args(
+                        calendar_id, gcal_event_id, summary, start_iso, end_iso,
+                        description, location, color, gc_id, team_id, reminders, event,
+                    ))
+                    if ok:
+                        state[gc_id]["fingerprint"] = fp
+                        state[gc_id]["summary"] = summary
+                        result.updated.append(summary)
+                    else:
+                        print(f"  ERROR update {summary}: {out}", file=sys.stderr)
+                        result.errors.append(f"update {summary}: {out}")
+
+            # else: unchanged — no gog call
+
+        # --- removed events (soft-cancel) ------------------------------------
+        removed_ids = set(state.keys()) - set(incoming.keys())
+        for gc_id in removed_ids:
+            entry = state[gc_id]
+            # Skip entries that are already soft-cancelled
+            if entry.get("cancelled", False):
+                continue
+            gcal_event_id = entry["gcal_event_id"]
+            original_summary = entry.get("summary", "Event")
+            cancelled_summary = f"[CANCELLED] {original_summary}"
+            print(f"  x CANCEL  {original_summary} (gcal:{gcal_event_id})", file=sys.stderr)
             if not dry_run:
                 ok, out = _run_gog([
                     "calendar", "update", calendar_id, gcal_event_id,
-                    "--summary", summary,
-                    "--from", start_iso,
-                    "--to", end_iso,
-                    "--event-color", color,
+                    "--summary", cancelled_summary,
+                    "--event-color", COLOR_CANCELLED,
                     "--no-input",
                 ])
                 if ok:
-                    state[gc_id]["fingerprint"] = fp
-                    state[gc_id]["summary"] = summary
-                    result.updated.append(summary)
+                    state[gc_id]["cancelled"] = True
+                    result.cancelled.append(gcal_event_id)
                 else:
-                    print(f"  ERROR update {summary}: {out}", file=sys.stderr)
-                    result.errors.append(f"update {summary}: {out}")
-
-        # else: unchanged — no gog call
-
-    # --- removed events --------------------------------------------------
-    removed_ids = set(state.keys()) - set(incoming.keys())
-    for gc_id in removed_ids:
-        entry = state[gc_id]
-        gcal_event_id = entry["gcal_event_id"]
-        original_summary = entry.get("summary", "Event")
-        cancelled_summary = f"[CANCELLED] {original_summary}"
-        print(f"  x CANCEL  {original_summary} (gcal:{gcal_event_id})", file=sys.stderr)
-        if not dry_run:
-            ok, out = _run_gog([
-                "calendar", "update", calendar_id, gcal_event_id,
-                "--summary", cancelled_summary,
-                "--event-color", COLOR_CANCELLED,
-                "--no-input",
-            ])
-            if ok:
-                del state[gc_id]
-                result.cancelled.append(gcal_event_id)
+                    print(f"  ERROR cancel {gcal_event_id}: {out}", file=sys.stderr)
+                    result.errors.append(f"cancel {gcal_event_id}: {out}")
             else:
-                print(f"  ERROR cancel {gcal_event_id}: {out}", file=sys.stderr)
-                result.errors.append(f"cancel {gcal_event_id}: {out}")
-        else:
-            result.cancelled.append(gcal_event_id)
+                result.cancelled.append(gcal_event_id)
 
-    if not dry_run:
-        save_state(state, gc_dir, team_id=team_id)
+        if not dry_run:
+            save_state(state, gc_dir, team_id=team_id)
+
+    finally:
+        if lock_fh is not None:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            lock_fh.close()
 
     return result

@@ -22,7 +22,6 @@ from gc_cli.client import (
     GCClient,
     _load_env,
     _load_teams,
-    ENV_PATH,
     GC_DIR,
     TEAMS_PATH,
 )
@@ -187,11 +186,26 @@ def cmd_sync(args: argparse.Namespace) -> None:
     client = GCClient(session, verbose=True)
     team_id = _resolve_team_id(args, client)
 
+    # Look up team_name and child from teams.json for rich event titles
+    team_name: str | None = None
+    child: str | None = None
+    for team in _load_teams():
+        if team.get("id") == team_id:
+            team_name = team.get("name")
+            child = team.get("child")  # optional field; absent = fall back to team name
+            break
+
     print(f"  Fetching schedule for team {team_id}...", file=sys.stderr)
     events = client.get_schedule(team_id)
     print(f"  {len(events)} events fetched", file=sys.stderr)
 
-    result = sync_team(events, calendar_id, GC_DIR, dry_run=args.dry_run, team_id=team_id)
+    result = sync_team(
+        events, calendar_id, GC_DIR,
+        dry_run=args.dry_run,
+        team_id=team_id,
+        team_name=team_name,
+        child=child,
+    )
     output_sync_result(result, args.dry_run)
 
     if result.errors:

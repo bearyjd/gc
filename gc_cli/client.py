@@ -49,10 +49,24 @@ def _load_env() -> dict[str, str]:
 
 
 def _load_teams() -> list[dict]:
-    """Load tracked teams from ~/.gc/teams.json."""
+    """Load tracked teams from ~/.gc/teams.json, deduplicating by id."""
     if not TEAMS_PATH.exists():
         return []
-    return json.loads(TEAMS_PATH.read_text())
+    raw: list[dict] = json.loads(TEAMS_PATH.read_text())
+    seen: dict[str, bool] = {}
+    deduped: list[dict] = []
+    for team in raw:
+        tid = team.get("id", "")
+        if tid and tid in seen:
+            print(
+                f"WARNING: duplicate team id '{tid}' in {TEAMS_PATH} — keeping first occurrence",
+                file=sys.stderr,
+            )
+            continue
+        if tid:
+            seen[tid] = True
+        deduped.append(team)
+    return deduped
 
 
 def _save_teams(teams: list[dict]) -> None:
@@ -81,10 +95,11 @@ def _normalize_team(raw: dict) -> dict:
 
 
 def _normalize_event(raw: dict) -> dict:
-    """Normalize a raw schedule event to {id, date, time, type, opponent, location, home_away}.
+    """Normalize a raw schedule event.
 
     API returns each list item as {"event": {...}, "pregame_data": {...}}.
     pregame_data is only present for games (has opponent_name and home_away).
+    All fields use .get() chains — never crash on missing fields.
     """
     ev = raw.get("event", raw)
     pregame = raw.get("pregame_data") or {}
@@ -115,6 +130,22 @@ def _normalize_event(raw: dict) -> dict:
         location = f"{loc_name}, {', '.join(loc_addr)}" if loc_name else ", ".join(loc_addr)
     else:
         location = loc_name
+    loc_address = ", ".join(loc_addr) if loc_addr else ""
+
+    # game_type: try several common GC field names
+    game_type = (
+        ev.get("game_type")
+        or ev.get("event_subtype")
+        or ev.get("season_type")
+        or pregame.get("game_type")
+        or ""
+    )
+
+    # notes / description
+    notes = ev.get("notes") or ev.get("description") or ""
+
+    # sport at event level (may be absent; caller can layer in team-level sport)
+    sport = ev.get("sport") or ""
 
     return {
         "id": ev.get("id", ""),
@@ -124,7 +155,12 @@ def _normalize_event(raw: dict) -> dict:
         "type": ev.get("event_type", ""),
         "opponent": pregame.get("opponent_name", "") or ev.get("title", ""),
         "location": location,
+        "location_name": loc_name,
+        "location_address": loc_address,
         "home_away": pregame.get("home_away", ""),
+        "game_type": game_type,
+        "notes": notes,
+        "sport": sport,
     }
 
 
