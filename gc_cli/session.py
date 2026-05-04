@@ -305,8 +305,11 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                     browser.close()
                     return None
 
-            # Wait for the SPA's post-auth API calls — stay on current page (no reload)
-            page.wait_for_timeout(15000)
+                # Navigate to /teams to force authenticated API calls after re-auth
+                page.goto("https://web.gc.com/teams", timeout=30000, wait_until="domcontentloaded")
+
+            # Wait for post-auth API calls and attempt localStorage fallback
+            page.wait_for_timeout(12000)
 
             # Fallback: read gc-token from browser storage if network interception missed it
             if not captured_token:
