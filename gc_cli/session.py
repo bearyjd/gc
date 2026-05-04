@@ -257,11 +257,14 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
 
             # Check if the saved session is still authenticated.
             # The SPA renders the login form in-place (URL stays /home) when the JWT is
-            # expired — detect by waiting for the email input to appear.
+            # expired. Wait up to 15s for the email input to appear; if it does, re-auth.
             page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(8000)
+            try:
+                page.wait_for_selector('input[type="email"]', timeout=15000)
+                needs_reauth = True
+            except Exception:
+                needs_reauth = False  # login form never appeared → session is valid
 
-            needs_reauth = page.locator('input[type="email"]').count() > 0
             if needs_reauth:
                 # JWT expired but device cookie saved → re-auth with email+password (no OTP)
                 if verbose:
