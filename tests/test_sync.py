@@ -7,6 +7,8 @@ import pytest
 from gc_cli.sync import (
     _event_description,
     _event_title,
+    _migrate_legacy_gcal_id,
+    _split_kids,
     event_fingerprint,
     load_state,
     save_state,
@@ -542,3 +544,117 @@ def test_continues_on_gog_error_for_one_event(tmp_gc_dir):
 
     assert len(result.errors) == 1
     assert len(result.created) == 1
+
+# ---------------------------------------------------------------------------
+# sync_team — --json flag in create/update args
+# ---------------------------------------------------------------------------
+
+def test_sync_create_args_include_json_flag(tmp_gc_dir):
+    with patch("gc_cli.sync.shutil.which", return_value="/usr/bin/gog"), \
+         patch("gc_cli.sync._run_gog", return_value=(True, '{"id":"gcal_7"}')) as mock_gog:
+        sync_team([GAME_EVENT], "cal_primary", tmp_gc_dir)
+
+    args = mock_gog.call_args[0][0]
+    assert "--json" in args
+    # --json should appear before --no-input
+    assert args.index("--json") < args.index("--no-input")
+
+
+def test_sync_update_args_include_json_flag(tmp_gc_dir):
+    state = {
+        "evt_001": {
+            "gcal_event_id": "gcal_existing",
+            "calendar_id": "cal_primary",
+            "fingerprint": "old_fp",
+            "summary": "old",
+        }
+    }
+    save_state(state, tmp_gc_dir)
+
+    with patch("gc_cli.sync.shutil.which", return_value="/usr/bin/gog"), \
+         patch("gc_cli.sync._run_gog", return_value=(True, "")) as mock_gog:
+        sync_team([GAME_EVENT], "cal_primary", tmp_gc_dir)
+
+    args = mock_gog.call_args[0][0]
+    assert "update" in args
+    assert "--json" in args
+
+
+# ---------------------------------------------------------------------------
+# _migrate_legacy_gcal_id
+# ---------------------------------------------------------------------------
+
+def test_migrate_clean_id_passes_through():
+    """A clean alphanumeric id is returned unchanged."""
+    assert _migrate_legacy_gcal_id("bc7g8m8137v43t0om0qn0q3gg8") == "bc7g8m8137v43t0om0qn0q3gg8"
+
+
+def test_migrate_tsv_blob_extracts_id():
+    """The confirmed real-world corrupted blob extracts to the bare id."""
+    blob = "id\tbc7g8m8137v43t0om0qn0q3gg8\nsummary\tpractice: Practice\n..."
+    assert _migrate_legacy_gcal_id(blob) == "bc7g8m8137v43t0om0qn0q3gg8"
+
+
+def test_migrate_garbage_returns_none():
+    """A value that is neither clean nor TSV-id-prefixed returns None."""
+    assert _migrate_legacy_gcal_id("some garbage with spaces but no id tab") is None
+
+
+def test_migrate_id_with_underscores_passes_through():
+    """Ids with underscores are valid and pass through."""
+    assert _migrate_legacy_gcal_id("abc_123_XYZ") == "abc_123_XYZ"
+
+
+def test_sync_migrates_corrupted_state_on_load(tmp_gc_dir):
+    """sync_team rewrites corrupted gcal_event_id values before processing events."""
+    corrupted_blob = "id\tbc7g8m8137v43t0om0qn0q3gg8\nsummary\tpractice: Practice\n"
+    state = {
+        "evt_001": {
+            "gcal_event_id": corrupted_blob,
+            "calendar_id": "cal_primary",
+            "fingerprint": "old_fp",
+            "summary": "old summary",
+        }
+    }
+    save_state(state, tmp_gc_dir)
+
+    with patch("gc_cli.sync.shutil.which", return_value="/usr/bin/gog"), \
+         patch("gc_cli.sync._run_gog", return_value=(True, "")) as mock_gog:
+        sync_team([GAME_EVENT], "cal_primary", tmp_gc_dir)
+
+    # The update call should use the clean id, not the blob
+    args = mock_gog.call_args[0][0]
+    assert "bc7g8m8137v43t0om0qn0q3gg8" in args
+    # The blob must not appear
+    assert corrupted_blob not in args
+
+    # State file should have the cleaned id persisted
+    final_state = load_state(tmp_gc_dir)
+    assert final_state["evt_001"]["gcal_event_id"] == "bc7g8m8137v43t0om0qn0q3gg8"
+
+
+# ---------------------------------------------------------------------------
+# _split_kids
+# ---------------------------------------------------------------------------
+
+def test_split_kids_single_name_unchanged():
+    assert _split_kids("Alex") == "Alex"
+
+
+def test_split_kids_two_names():
+    assert _split_kids("PennJack") == "Penn & Jack"
+
+
+def test_split_kids_three_names():
+    assert _split_kids("AlexBenCarol") == "Alex & Ben & Carol"
+
+
+def test_split_kids_all_uppercase_no_split():
+    """All-caps strings have no lowercase->uppercase boundary; pass through."""
+    assert _split_kids("ABC") == "ABC"
+
+
+def test_event_title_splits_camel_case_child():
+    """_event_title expands 'PennJack' to 'Penn & Jack' in the title."""
+    title = _event_title(GAME_EVENT, team_name="Tigers", child="PennJack")
+    assert "Penn & Jack" in title

@@ -159,6 +159,18 @@ def _event_type_label(event: dict) -> str:
     return (event.get("type") or "Event").title()
 
 
+def _split_kids(child: str) -> str:
+    """Expand a CamelCase multi-kid string into 'Kid1 & Kid2 & Kid3'.
+
+    A boundary is detected where a lowercase letter is immediately followed by
+    an uppercase letter (e.g. 'PennJack' → 'Penn & Jack').
+    Single names pass through unchanged.
+    """
+    import re
+    parts = re.sub(r"([a-z])([A-Z])", r"\1\n\2", child).split("\n")
+    return " & ".join(parts)
+
+
 def _event_title(event: dict, team_name: str | None, child: str | None) -> str:
     """Build a rich calendar event title.
 
@@ -171,7 +183,8 @@ def _event_title(event: dict, team_name: str | None, child: str | None) -> str:
     sport = event.get("sport") or ""
     emoji = _sport_emoji(sport)
 
-    label = child if child else (team_name or "")
+    raw_label = child if child else (team_name or "")
+    label = _split_kids(raw_label) if raw_label else raw_label
     type_label = _event_type_label(event)
 
     # Trailing home/away parenthetical only for games with known home_away
@@ -343,6 +356,27 @@ def _parse_gcal_event_id(gog_output: str) -> str:
     return gog_output.strip()
 
 
+def _migrate_legacy_gcal_id(value: str) -> str | None:
+    """Convert a corrupted multi-line TSV blob into the bare GCal event id.
+
+    Returns the extracted id, or None if the value looks unrecoverable
+    (caller should treat as a fresh event).
+    Already-clean ids (no whitespace) pass through unchanged.
+    """
+    import re
+
+    # Already clean — no whitespace characters
+    if re.match(r"^[A-Za-z0-9_]+$", value):
+        return value
+
+    # TSV blob: 'id\t<event_id>\n...'
+    m = re.match(r"^id\t([^\n\r]+)", value)
+    if m:
+        return m.group(1).strip()
+
+    return None
+
+
 def _build_gog_create_args(
     calendar_id: str,
     summary: str,
@@ -372,7 +406,7 @@ def _build_gog_create_args(
         args += ["--location", location]
     for reminder in reminders:
         args += ["--reminder", reminder]
-    args += ["--no-input"]
+    args += ["--json", "--no-input"]
     return args
 
 
@@ -406,7 +440,7 @@ def _build_gog_update_args(
         args += ["--location", location]
     for reminder in reminders:
         args += ["--reminder", reminder]
-    args += ["--no-input"]
+    args += ["--json", "--no-input"]
     return args
 
 
@@ -450,6 +484,30 @@ def sync_team(
             fcntl.flock(lock_fh, fcntl.LOCK_EX)  # blocks until acquired
 
         state = load_state(gc_dir, team_id=team_id)
+
+        # --- one-time migration: clean up corrupted gcal_event_id values ------
+        corrupted_keys = [
+            k for k, v in state.items()
+            if isinstance(v, dict) and "\t" in str(v.get("gcal_event_id", ""))
+            or isinstance(v, dict) and "\n" in str(v.get("gcal_event_id", ""))
+        ]
+        if corrupted_keys:
+            state_dirty = False
+            for k in corrupted_keys:
+                raw = state[k].get("gcal_event_id", "")
+                cleaned = _migrate_legacy_gcal_id(raw)
+                if cleaned is None:
+                    print(
+                        f"  WARN: could not recover gcal_event_id for gc_id={k!r}"
+                        f" — dropping entry, will re-create as new event",
+                        file=sys.stderr,
+                    )
+                    del state[k]
+                else:
+                    state[k]["gcal_event_id"] = cleaned
+                state_dirty = True
+            if state_dirty and not dry_run:
+                save_state(state, gc_dir, team_id=team_id)
 
         incoming = {e["id"]: e for e in events if e.get("id")}
 

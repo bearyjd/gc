@@ -225,7 +225,9 @@ This tool outputs to `/tmp/gc/` which is read by `school-sync.sh` and fed into t
 
 ### Adding a child name to event titles
 
-`gc sync` can label calendar events with a child's name (e.g. "Alex — Game vs Eagles") instead of the team name. Add a `child` field to each team in `~/.gc/teams.json`:
+`gc sync` can label calendar events with a child's name (e.g. "Alex — Game vs Eagles") instead of the team name. Child mapping is resolved in this order:
+
+1. **`child` field in `~/.gc/teams.json`** (preferred for new setups):
 
 ```json
 [
@@ -244,7 +246,28 @@ This tool outputs to `/tmp/gc/` which is read by `school-sync.sh` and fed into t
 ]
 ```
 
-If `child` is absent, the team `name` is used as the label. No CLI flag changes needed.
+2. **`GC_TEAM_MAP` env var** (existing convention used by `gc-scrape.sh`):
+
+```bash
+GC_TEAM_MAP="teamid:Child,teamid2:Child,..."
+```
+
+For example:
+```
+GC_TEAM_MAP="02cdb406-...:Ford,54ec80d7-...:PennJack,ba97753d-...:Jack"
+```
+
+If `child` is present in `teams.json`, the env var is ignored for that team. If `child` is absent from both sources, the team `name` is used as the label. No CLI flag changes needed.
+
+#### Shared-team / multi-kid rendering
+
+When one team is shared by multiple kids, use a CamelCase concatenation in the child value (e.g. `PennJack`). `gc sync` automatically expands internal CamelCase boundaries to "Penn & Jack" in event titles:
+- `PennJack` → `Penn & Jack`
+- `AlexBenCarol` → `Alex & Ben & Carol`
+
+#### State file migration (automatic)
+
+If you ran `gc sync` with an older version that produced corrupted state files (gcal_event_id stored as a multi-line TSV blob instead of a bare id), the migration runs automatically on the first sync after upgrade. No manual state file reset is needed — corrupted entries are cleaned up in place.
 
 ### Event title format
 
