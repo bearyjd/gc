@@ -1,4 +1,5 @@
 """Tests for gc_cli.session — cache logic and credential loading."""
+import base64
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,11 +13,52 @@ from gc_cli.session import (
     SESSION_TTL_MINUTES,
     _fetch_gc_otp,
     _get_credentials,
+    _is_user_token,
     _load_cached_session,
     _save_session,
     _session_path,
     get_session,
 )
+
+
+def _jwt(payload: dict) -> str:
+    """Build an unsigned JWT-shaped string with the given payload (test helper)."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    sig = "x" * 200  # padding so length > 200 (matches old size heuristic for safety)
+    return f"{header}.{body}.{sig}"
+
+
+_USER_JWT = _jwt({"type": "user", "email": "u@x.com", "iat": 1, "exp": 9999999999})
+_CLIENT_JWT = _jwt({"type": "client", "sid": "s", "cid": "c", "iat": 1, "exp": 600})
+
+
+# ---------------------------------------------------------------------------
+# _is_user_token
+# ---------------------------------------------------------------------------
+
+def test_is_user_token_accepts_user_type():
+    """Real user JWT (type=user) is accepted."""
+    assert _is_user_token(_USER_JWT) is True
+
+
+def test_is_user_token_rejects_client_type():
+    """Short-lived bootstrap JWT (type=client) is rejected — root cause of past 401 loop."""
+    assert _is_user_token(_CLIENT_JWT) is False
+
+
+def test_is_user_token_rejects_garbage():
+    """Non-JWT strings, empty input, and malformed tokens are all rejected."""
+    assert _is_user_token("") is False
+    assert _is_user_token("not-a-jwt") is False
+    assert _is_user_token("eyJ-only-one-segment") is False
+    assert _is_user_token("eyJ.not-base64.sig") is False
+
+
+def test_is_user_token_rejects_jwt_without_type_field():
+    """A JWT missing the ``type`` claim is treated as non-user (defensive)."""
+    no_type = _jwt({"email": "u@x.com", "iat": 1, "exp": 9999999999})
+    assert _is_user_token(no_type) is False
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +264,7 @@ def test_fetch_gc_otp_raises_runtime_error_if_gog_missing():
 def _make_playwright_mocks(
     *,
     otp_field_found: bool = False,
-    gc_token: str = "eyJ" + "a" * 250,
+    gc_token: str = _USER_JWT,
 ) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock]:
     """Return (mock_pw_cm, mock_browser, mock_context, mock_page)."""
     mock_page = MagicMock()
