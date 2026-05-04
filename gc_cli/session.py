@@ -255,9 +255,10 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
             context = browser.new_context(storage_state=str(CONTEXT_PATH))
             page = context.new_page()
 
-            # Check if the saved session is still authenticated
+            # Check if the saved session is still authenticated.
+            # React Router redirect to /login happens client-side ~4-8s after domcontentloaded.
             page.goto("https://web.gc.com/home", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(8000)
 
             if "login" in page.url:
                 # JWT expired but device cookie saved → re-auth with email+password (no OTP)
