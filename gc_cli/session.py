@@ -42,7 +42,10 @@ def _scan_localstorage_for_user_jwt(page) -> str | None:  # type: ignore[no-unty
                     }
                     try {
                         const s = JSON.stringify(JSON.parse(val));
-                        const matches = s.match(/eyJ[A-Za-z0-9._-]{200,}/g);
+                        // Upper bound prevents a pathological match against
+                        // a huge concatenated storage value; real GC JWTs
+                        // are ~330 chars.
+                        const matches = s.match(/eyJ[A-Za-z0-9._-]{200,2000}/g);
                         if (matches) for (const m of matches) out.push(m);
                     } catch (e) {}
                 }
@@ -85,6 +88,21 @@ def _is_user_token(token: str) -> bool:
 SESSION_DIR = GC_DIR / "sessions"
 SESSION_TTL_MINUTES = 60
 CONTEXT_PATH = SESSION_DIR / "playwright_context.json"
+
+# CSS selector for GameChanger's OTP input. The SPA renders
+# <input id="code" name="code" type="text" inputmode="text">; the trailing
+# autocomplete=one-time-code / type=tel / inputmode=numeric entries are
+# defensive in case the SPA changes its markup. Kept module-level so
+# _try_context_login and _playwright_login share the same constant — they
+# previously had identical literals at different indentation, and one was
+# updated without the other (see PR #4 / PR #6 history).
+_OTP_SELECTOR = (
+    'input#code, '
+    'input[name="code"], '
+    'input[autocomplete="one-time-code"], '
+    'input[type="tel"], '
+    'input[inputmode="numeric"]'
+)
 
 # Required for headless Chromium running as root inside containers (LXC/Docker).
 # --no-sandbox: root cannot use the Chromium sandbox.
@@ -364,13 +382,6 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
                     page.fill('input[name="password"]', password)
                     page.click('button:has-text("Sign in")')
 
-                    _OTP_SELECTOR = (
-                        'input#code, '
-                        'input[name="code"], '
-                        'input[autocomplete="one-time-code"], '
-                        'input[type="tel"], '
-                        'input[inputmode="numeric"]'
-                    )
                     try:
                         page.wait_for_selector(_OTP_SELECTOR, timeout=15000)
                     except Exception:
@@ -531,13 +542,6 @@ def _playwright_login(
             else:
                 # Headless auto-OTP: poll for OTP field, fetch code from Gmail,
                 # submit — no human interaction required.
-                _OTP_SELECTOR = (
-                    'input#code, '
-                    'input[name="code"], '
-                    'input[autocomplete="one-time-code"], '
-                    'input[type="tel"], '
-                    'input[inputmode="numeric"]'
-                )
                 _deadline = time.monotonic() + 300  # 5-minute window
                 while time.monotonic() < _deadline:
                     _cur_url = page.url

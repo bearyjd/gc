@@ -283,11 +283,15 @@ def cmd_token_refresh(args: argparse.Namespace) -> None:
             if resp.status_code == 200:
                 print("  Token valid — session kept alive", file=sys.stderr)
                 return
-            if resp.status_code == 401:
-                print("  Token expired (401) — falling back to full login...", file=sys.stderr)
+            if resp.status_code in (401, 403):
+                print(f"  Token rejected ({resp.status_code}) — falling back to full login...", file=sys.stderr)
                 # fall through to path 3
             else:
-                print(f"  WARN: Unexpected status {resp.status_code} — falling back to full login...", file=sys.stderr)
+                # Transient (5xx) or unexpected status — keep the existing
+                # session and let the next tick try again. Triggering a
+                # Playwright login here would burn an OTP for no reason.
+                print(f"  WARN: Unexpected status {resp.status_code} — keeping current session", file=sys.stderr)
+                return
 
     # --- Path 3: Full Playwright login (auto-OTP via gog when headless) ---
     print("  Running full Playwright login...", file=sys.stderr)

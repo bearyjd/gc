@@ -17,6 +17,7 @@ from gc_cli.session import (
     _load_cached_session,
     _otp_is_fresh,
     _save_session,
+    _scan_localstorage_for_user_jwt,
     _session_path,
     get_session,
 )
@@ -60,6 +61,62 @@ def test_is_user_token_rejects_jwt_without_type_field():
     """A JWT missing the ``type`` claim is treated as non-user (defensive)."""
     no_type = _jwt({"email": "u@x.com", "iat": 1, "exp": 9999999999})
     assert _is_user_token(no_type) is False
+
+
+# ---------------------------------------------------------------------------
+# _scan_localstorage_for_user_jwt
+# ---------------------------------------------------------------------------
+
+def _mock_page_with_storage(candidates):
+    """Return a mock Playwright page whose evaluate() yields the given list."""
+    page = MagicMock()
+    page.evaluate.return_value = candidates
+    return page
+
+
+def test_scan_localstorage_returns_first_user_jwt():
+    """Among multiple JWT candidates the helper picks the first type=user."""
+    page = _mock_page_with_storage([_CLIENT_JWT, _USER_JWT])
+    assert _scan_localstorage_for_user_jwt(page) == _USER_JWT
+
+
+def test_scan_localstorage_skips_client_token_to_find_user_token():
+    """Order matters: client tokens often appear first; helper must keep looking."""
+    second_user = _jwt({"type": "user", "email": "z@x.com", "iat": 2, "exp": 9999999999})
+    page = _mock_page_with_storage([_CLIENT_JWT, _CLIENT_JWT, second_user])
+    assert _scan_localstorage_for_user_jwt(page) == second_user
+
+
+def test_scan_localstorage_returns_none_when_no_user_token():
+    """All-client storage returns None — caller should fall through to header capture."""
+    page = _mock_page_with_storage([_CLIENT_JWT, _CLIENT_JWT])
+    assert _scan_localstorage_for_user_jwt(page) is None
+
+
+def test_scan_localstorage_returns_none_on_empty_storage():
+    page = _mock_page_with_storage([])
+    assert _scan_localstorage_for_user_jwt(page) is None
+
+
+def test_scan_localstorage_returns_none_when_evaluate_raises():
+    """Playwright errors must not crash the caller — return None."""
+    page = MagicMock()
+    page.evaluate.side_effect = RuntimeError("page closed")
+    assert _scan_localstorage_for_user_jwt(page) is None
+
+
+def test_scan_localstorage_returns_none_when_evaluate_returns_non_list():
+    """Defensive against unexpected return shapes (str, dict, None)."""
+    for bogus in ("just-a-string", {"key": "value"}, None, 42):
+        page = MagicMock()
+        page.evaluate.return_value = bogus
+        assert _scan_localstorage_for_user_jwt(page) is None
+
+
+def test_scan_localstorage_skips_non_string_entries():
+    """Mixed list with garbage entries — helper still returns the user JWT."""
+    page = _mock_page_with_storage([None, 42, _CLIENT_JWT, _USER_JWT, "not-a-jwt"])
+    assert _scan_localstorage_for_user_jwt(page) == _USER_JWT
 
 
 # ---------------------------------------------------------------------------
