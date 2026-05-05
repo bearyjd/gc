@@ -184,6 +184,31 @@ class GCClient:
     def __init__(self, session: requests.Session, verbose: bool = True):
         self.session = session
         self.verbose = verbose
+        # Guards single retry-on-401 per logical request so a permanently
+        # invalid token never loops.
+        self._refreshed_once = False
+
+    def _refresh_session(self) -> bool:
+        """Try to obtain a fresh user-JWT session via the saved Playwright
+        context. Persists the new token to ~/.gc/.env so other processes
+        (cron, /api/sync) pick it up. Returns True on success."""
+        # Lazy import to avoid the session.py → client.py → session.py cycle.
+        from gc_cli.session import _try_context_login, _update_env_token
+
+        if self.verbose:
+            _log("  401 — attempting token refresh via saved browser context...")
+        new_session = _try_context_login(verbose=self.verbose)
+        if not new_session:
+            if self.verbose:
+                _log("  Token refresh failed; check that GC_EMAIL, GC_PASSWORD, "
+                     "and GOG_KEYRING_PASSWORD are set and gog is authed.")
+            return False
+        self.session = new_session
+        token = new_session.headers.get("gc-token", "")
+        device_id = new_session.headers.get("gc-device-id") or None
+        if token:
+            _update_env_token(token, device_id)
+        return True
 
     def _get(self, path: str, params: dict | None = None) -> dict | list:
         url = f"{BASE_URL}{path}"
@@ -191,6 +216,10 @@ class GCClient:
             _log(f"  GET {path}")
         try:
             resp = self.session.get(url, params=params, timeout=30)
+            if resp.status_code == 401 and not self._refreshed_once:
+                self._refreshed_once = True
+                if self._refresh_session():
+                    resp = self.session.get(url, params=params, timeout=30)
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
