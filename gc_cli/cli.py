@@ -238,17 +238,19 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 
 def cmd_token_refresh(args: argparse.Namespace) -> None:
-    """Refresh gc-token — keeps the GameChanger session alive without OTP.
+    """Refresh gc-token — keeps the GameChanger session alive.
 
-    Strategy (in order):
-      1. Saved Playwright context (playwright_context.json) — captures a fresh
-         JWT from the browser session, updates ~/.gc/.env.  No OTP needed.
-      2. Env token ping — if no context exists, hits the GC API with the current
-         GC_TOKEN to extend the sliding session.  Fails loudly on 401 so the
-         user knows to paste a fresh token.
+    Strategy (in order, all headless-capable):
+      1. Saved Playwright context (playwright_context.json) — captures a
+         fresh user JWT from the restored browser session.
+      2. Env token ping — extends the sliding session if the env GC_TOKEN
+         still works.
+      3. Full Playwright login — fresh email+password+OTP via gog. Works
+         headlessly thanks to the auto-OTP path in _playwright_login.
 
-    The systemd timer calls this every 45 min on headless servers.
-    Use --visible for the one-time setup on a machine with a display.
+    Cron calls this with no flags. Use --visible only when the machine has
+    a display AND you want to debug the browser (e.g., a brand-new device
+    that GC has not yet trusted).
     """
     from gc_cli.session import _token_from_env, _make_session
 
@@ -274,45 +276,32 @@ def cmd_token_refresh(args: argparse.Namespace) -> None:
                 "https://api.team-manager.gc.com/me/teams", timeout=15
             )
         except _requests.RequestException as e:
-            print(f"  ERROR: Network error during ping: {e}", file=sys.stderr)
-            sys.exit(1)
+            print(f"  WARN: Network error during ping ({e}) — falling back to full login...", file=sys.stderr)
+            resp = None
 
-        if resp.status_code == 200:
-            print("  Token valid — session kept alive", file=sys.stderr)
-            return
-        if resp.status_code == 401:
-            if visible:
+        if resp is not None:
+            if resp.status_code == 200:
+                print("  Token valid — session kept alive", file=sys.stderr)
+                return
+            if resp.status_code == 401:
                 print("  Token expired (401) — falling back to full login...", file=sys.stderr)
-                # fall through to Playwright login below
+                # fall through to path 3
             else:
-                print(
-                    "  ERROR: Token expired (401).\n"
-                    "  Get a fresh gc-token from DevTools and update ~/.gc/.env:\n"
-                    "    GC_TOKEN=\"<paste new token>\"\n"
-                    "  Then run: gc token-refresh",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        else:
-            print(f"  WARN: Unexpected status {resp.status_code}", file=sys.stderr)
-            return
+                print(f"  WARN: Unexpected status {resp.status_code} — falling back to full login...", file=sys.stderr)
 
-    # --- No token, no context — need full login ---
-    print(
-        "  No GC_TOKEN or saved context found.\n"
-        "  On a machine with a display, run: gc token-refresh --visible\n"
-        "  On headless servers, add GC_TOKEN to ~/.gc/.env",
-        file=sys.stderr,
-    )
-    if visible:
-        email, password = _get_credentials()
-        session = _playwright_login(email, password, visible=True)
-        token = session.headers.get("gc-token", "")
-        device_id = session.headers.get("gc-device-id") or None
-        _update_env_token(token, device_id)
-        print("  Token refreshed via full login, browser context saved", file=sys.stderr)
-    else:
+    # --- Path 3: Full Playwright login (auto-OTP via gog when headless) ---
+    print("  Running full Playwright login...", file=sys.stderr)
+    email, password = _get_credentials()
+    try:
+        session = _playwright_login(email, password, visible=visible)
+    except RuntimeError as e:
+        print(f"  ERROR: Full login failed: {e}", file=sys.stderr)
         sys.exit(1)
+    token = session.headers.get("gc-token", "")
+    device_id = session.headers.get("gc-device-id") or None
+    if token:
+        _update_env_token(token, device_id)
+    print("  Token refreshed via full login, browser context saved", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
