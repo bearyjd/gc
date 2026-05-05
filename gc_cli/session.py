@@ -21,6 +21,44 @@ import requests
 from gc_cli.client import GC_DIR
 
 
+def _scan_localstorage_for_user_jwt(page) -> str | None:  # type: ignore[no-untyped-def]
+    """Walk localStorage + sessionStorage, return the first ``type=user`` JWT.
+
+    The SPA persists both ``type=client`` (bootstrap) and ``type=user``
+    JWTs in storage. Returning the first eyJ-prefixed value (which the
+    earlier code did) often picked the client token; Python then
+    rejected it and we missed the user JWT entirely. Collect all
+    candidates and let Python filter.
+    """
+    try:
+        candidates = page.evaluate("""() => {
+            const out = [];
+            for (const store of [localStorage, sessionStorage]) {
+                for (let i = 0; i < store.length; i++) {
+                    const val = store.getItem(store.key(i));
+                    if (!val) continue;
+                    if (val.startsWith('eyJ') && val.length > 200) {
+                        out.push(val);
+                    }
+                    try {
+                        const s = JSON.stringify(JSON.parse(val));
+                        const matches = s.match(/eyJ[A-Za-z0-9._-]{200,}/g);
+                        if (matches) for (const m of matches) out.push(m);
+                    } catch (e) {}
+                }
+            }
+            return out;
+        }""")
+    except Exception:
+        return None
+    if not isinstance(candidates, list):
+        return None
+    for tok in candidates:
+        if isinstance(tok, str) and _is_user_token(tok):
+            return tok
+    return None
+
+
 def _is_user_token(token: str) -> bool:
     """Return True iff token is a JWT with payload field ``type == "user"``.
 
@@ -157,26 +195,9 @@ def _capture_gc_headers_from_page(page) -> tuple[str | None, str | None]:  # typ
 
     # Fallback: read gc-token from browser storage if network interception missed it
     if not captured_token:
-        try:
-            raw = page.evaluate("""() => {
-                for (const store of [localStorage, sessionStorage]) {
-                    for (let i = 0; i < store.length; i++) {
-                        const val = store.getItem(store.key(i));
-                        if (val && val.startsWith('eyJ') && val.length > 200)
-                            return val;
-                        try {
-                            const s = JSON.stringify(JSON.parse(val));
-                            const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
-                            if (m) return m[1];
-                        } catch (e) {}
-                    }
-                }
-                return null;
-            }""")
-            if isinstance(raw, str) and _is_user_token(raw):
-                captured_token.append(raw)
-        except Exception:
-            pass
+        tok = _scan_localstorage_for_user_jwt(page)
+        if tok:
+            captured_token.append(tok)
 
     return (
         captured_token[0] if captured_token else None,
@@ -389,26 +410,9 @@ def _try_context_login(verbose: bool = False) -> requests.Session | None:
 
             # Fallback: read gc-token from browser storage if network interception missed it
             if not captured_token:
-                try:
-                    raw = page.evaluate("""() => {
-                        for (const store of [localStorage, sessionStorage]) {
-                            for (let i = 0; i < store.length; i++) {
-                                const val = store.getItem(store.key(i));
-                                if (val && val.startsWith('eyJ') && val.length > 200)
-                                    return val;
-                                try {
-                                    const s = JSON.stringify(JSON.parse(val));
-                                    const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
-                                    if (m) return m[1];
-                                } catch (e) {}
-                            }
-                        }
-                        return null;
-                    }""")
-                    if isinstance(raw, str) and _is_user_token(raw):
-                        captured_token.append(raw)
-                except Exception:
-                    pass
+                tok = _scan_localstorage_for_user_jwt(page)
+                if tok:
+                    captured_token.append(tok)
 
             gc_token = captured_token[0] if captured_token else None
             gc_device_id = captured_device[0] if captured_device else None
@@ -521,30 +525,15 @@ def _playwright_login(
                     # Fallback: read token directly from browser storage if
                     # network interception didn't capture it from headers
                     if not gc_token:
-                        try:
-                            raw = page.evaluate("""() => {
-                                for (const store of [localStorage, sessionStorage]) {
-                                    for (let i = 0; i < store.length; i++) {
-                                        const val = store.getItem(store.key(i));
-                                        if (val && val.startsWith('eyJ') && val.length > 200)
-                                            return val;
-                                        try {
-                                            const s = JSON.stringify(JSON.parse(val));
-                                            const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
-                                            if (m) return m[1];
-                                        } catch (e) {}
-                                    }
-                                }
-                                return null;
-                            }""")
-                            if isinstance(raw, str) and _is_user_token(raw):
-                                gc_token = raw
-                        except Exception:
-                            pass
+                        tok = _scan_localstorage_for_user_jwt(page)
+                        if tok:
+                            gc_token = tok
             else:
                 # Headless auto-OTP: poll for OTP field, fetch code from Gmail,
                 # submit — no human interaction required.
                 _OTP_SELECTOR = (
+                    'input#code, '
+                    'input[name="code"], '
                     'input[autocomplete="one-time-code"], '
                     'input[type="tel"], '
                     'input[inputmode="numeric"]'
@@ -579,26 +568,9 @@ def _playwright_login(
 
                 # Fallback: read gc-token from browser storage if network interception missed it
                 if not gc_token:
-                    try:
-                        raw = page.evaluate("""() => {
-                            for (const store of [localStorage, sessionStorage]) {
-                                for (let i = 0; i < store.length; i++) {
-                                    const val = store.getItem(store.key(i));
-                                    if (val && val.startsWith('eyJ') && val.length > 200)
-                                        return val;
-                                    try {
-                                        const s = JSON.stringify(JSON.parse(val));
-                                        const m = s.match(/"(eyJ[A-Za-z0-9._-]{200,})"/);
-                                        if (m) return m[1];
-                                    } catch (e) {}
-                                }
-                            }
-                            return null;
-                        }""")
-                        if isinstance(raw, str) and _is_user_token(raw):
-                            gc_token = raw
-                    except Exception:
-                        pass
+                    tok = _scan_localstorage_for_user_jwt(page)
+                    if tok:
+                        gc_token = tok
         except RuntimeError:
             raise
         except Exception as e:
