@@ -12,3 +12,5 @@ NOTES.md
 tests/e2e/.env
 tests/e2e/output/
 *.log
+.omc/
+.claude/
