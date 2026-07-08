@@ -12,5 +12,7 @@ NOTES.md
 tests/e2e/.env
 tests/e2e/output/
 *.log
+
+# Agent runtime/session state (not project source)
 .omc/
 .claude/
