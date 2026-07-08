@@ -1,0 +1,30 @@
+{
+  "schedule": [
+    {
+      "event": {
+        "id": "event-aaa",
+        "event_type": "game",
+        "start": {"datetime": "2026-04-15T18:30:00Z"},
+        "timezone": "America/New_York",
+        "location": {
+          "name": "Field 3",
+          "address": ["123 Main St", "Springfield"]
+        },
+        "title": "vs Team X",
+        "notes": "Bring extra gloves"
+      },
+      "pregame_data": {
+        "opponent_name": "Team X",
+        "home_away": "home"
+      }
+    },
+    {
+      "event": {
+        "id": "event-bbb",
+        "event_type": "practice",
+        "start": {"datetime": "2026-04-17T22:00:00Z"},
+        "timezone": "America/New_York"
+      }
+    }
+  ]
+}

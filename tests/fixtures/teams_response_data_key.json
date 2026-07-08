@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "id": "team-ccc-333",
+      "name": "Team C",
+      "sport": "soccer",
+      "season_name": "Winter",
+      "season_year": "2026"
+    }
+  ]
+}

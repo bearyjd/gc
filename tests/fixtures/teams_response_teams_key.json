@@ -1,0 +1,17 @@
+{
+  "teams": [
+    {
+      "id": "team-aaa-111",
+      "name": "Team A",
+      "sport": "baseball",
+      "season_name": "Spring",
+      "season_year": "2026"
+    },
+    {
+      "teamId": "team-bbb-222",
+      "teamName": "Team B",
+      "sport": "softball",
+      "season": "Fall 2025"
+    }
+  ]
+}

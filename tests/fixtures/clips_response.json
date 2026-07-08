@@ -1,0 +1,16 @@
+{
+  "clips": [
+    {
+      "id": "clip-111",
+      "title": "Great catch",
+      "url": "https://example.com/clip-111.mp4",
+      "eventId": "event-aaa"
+    },
+    {
+      "clipId": "clip-222",
+      "name": "Home run",
+      "clipUrl": "https://example.com/clip-222.mp4",
+      "event_id": "event-bbb"
+    }
+  ]
+}
