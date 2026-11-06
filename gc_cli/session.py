@@ -20,6 +20,18 @@ import requests
 
 from gc_cli.client import GC_DIR
 
+# GameChanger's WAF answers 403 to python-requests' / HeadlessChrome's default
+# User-Agent, so every API session sends an ordinary desktop Chrome UA.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+)
+
+
+def user_agent() -> str:
+    """User-Agent for API requests; override with the GC_USER_AGENT env var."""
+    return os.environ.get("GC_USER_AGENT") or DEFAULT_USER_AGENT
+
 
 def _scan_localstorage_for_user_jwt(page) -> str | None:  # type: ignore[no-untyped-def]
     """Walk localStorage + sessionStorage, return the first ``type=user`` JWT.
@@ -162,6 +174,8 @@ def _load_cached_session(email: str) -> requests.Session | None:
 
         session = requests.Session()
         session.headers.update(data.get("headers", {}))
+        # Older cache files persisted python-requests/HeadlessChrome UAs.
+        session.headers["User-Agent"] = user_agent()
         for cookie in data.get("cookies", []):
             session.cookies.set(
                 cookie["name"], cookie["value"], domain=cookie.get("domain", "")
@@ -177,7 +191,7 @@ def _save_session(email: str, session: requests.Session, cookies: list[dict]) ->
     path = _session_path(email)
     data = {
         "cached_at": datetime.now().isoformat(),
-        "headers": dict(session.headers),
+        "headers": {k: v for k, v in session.headers.items() if k.lower() != "user-agent"},
         "cookies": cookies,
     }
     path.write_text(json.dumps(data, indent=2))
@@ -230,6 +244,7 @@ def _make_session(gc_token: str, gc_device_id: str | None = None) -> requests.Se
         "gc-token": gc_token,
         "gc-app-name": "web",
         "Accept": "application/json",
+        "User-Agent": user_agent(),
     }
     if gc_device_id:
         headers["gc-device-id"] = gc_device_id
