@@ -112,3 +112,14 @@ def test_refresh_guard_prevents_second_attempt_within_same_client():
         client._get("/me/teams")
         client._get("/me/user")  # 401 here would otherwise re-trigger refresh
     mock_refresh.assert_called_once()
+
+
+def test_get_warns_on_403_without_leaking_secrets(capsys):
+    """403 → one-line WARN naming bot protection / User-Agent; no retry, no secrets."""
+    session = _mock_session([_resp(403, {})], headers={"gc-token": "SECRET-TOKEN-123"})
+    client = GCClient(session, verbose=False)
+    assert client._get("/me/teams") == []
+    session.get.assert_called_once()
+    err = capsys.readouterr().err
+    assert "403" in err and "User-Agent" in err and "GC_USER_AGENT" in err
+    assert "SECRET-TOKEN-123" not in err

@@ -483,3 +483,58 @@ def test_playwright_login_headless_skips_otp_when_no_otp_field(tmp_gc_dir, monke
         _playwright_login("user@gc.com", "pass", visible=False)
 
     mock_otp.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Browser User-Agent (GameChanger WAF 403s python-requests / HeadlessChrome)
+# ---------------------------------------------------------------------------
+
+def test_make_session_sends_chrome_user_agent_and_gc_headers(monkeypatch):
+    from gc_cli.session import DEFAULT_USER_AGENT, _make_session
+
+    monkeypatch.delenv("GC_USER_AGENT", raising=False)
+    s = _make_session("tok", "dev-1")
+    assert s.headers["User-Agent"] == DEFAULT_USER_AGENT
+    assert "Chrome/" in DEFAULT_USER_AGENT
+    assert "python-requests" not in s.headers["User-Agent"]
+    assert s.headers["gc-token"] == "tok"
+    assert s.headers["gc-device-id"] == "dev-1"
+    assert s.headers["gc-app-name"] == "web"
+    assert s.headers["Accept"] == "application/json"
+
+
+def test_user_agent_env_override(monkeypatch):
+    from gc_cli.session import _make_session
+
+    monkeypatch.setenv("GC_USER_AGENT", "Custom/1.0")
+    assert _make_session("tok").headers["User-Agent"] == "Custom/1.0"
+
+
+@pytest.mark.parametrize("stale", ["python-requests/2.31.0", "Mozilla/5.0 HeadlessChrome/120.0"])
+def test_restored_session_overrides_stale_user_agent(tmp_gc_dir, monkeypatch, stale):
+    from gc_cli.session import DEFAULT_USER_AGENT
+
+    monkeypatch.delenv("GC_USER_AGENT", raising=False)
+    monkeypatch.setattr("gc_cli.session.SESSION_DIR", tmp_gc_dir / "sessions")
+    session = requests.Session()
+    session.headers.update({"gc-token": "t", "User-Agent": stale})
+    _save_session("user@example.com", session, [])
+
+    loaded = _load_cached_session("user@example.com")
+    assert loaded is not None
+    assert loaded.headers["User-Agent"] == DEFAULT_USER_AGENT
+    assert loaded.headers["gc-token"] == "t"
+    # legacy file with a stale UA already on disk
+    path = _session_path("user@example.com")
+    data = json.loads(path.read_text())
+    data["headers"]["User-Agent"] = stale
+    path.write_text(json.dumps(data))
+    assert _load_cached_session("user@example.com").headers["User-Agent"] == DEFAULT_USER_AGENT
+
+
+def test_save_session_does_not_persist_user_agent(tmp_gc_dir, monkeypatch):
+    monkeypatch.setattr("gc_cli.session.SESSION_DIR", tmp_gc_dir / "sessions")
+    session = requests.Session()
+    _save_session("user@example.com", session, [])
+    data = json.loads(_session_path("user@example.com").read_text())
+    assert "User-Agent" not in data["headers"]

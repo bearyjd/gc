@@ -220,6 +220,9 @@ class GCClient:
                 self._refreshed_once = True
                 if self._refresh_session():
                     resp = self.session.get(url, params=params, timeout=30)
+            if resp.status_code == 403:
+                _log(f"  WARN: API refused {path} (HTTP 403) — likely bot protection; "
+                     "check the User-Agent / GC_USER_AGENT setting")
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
