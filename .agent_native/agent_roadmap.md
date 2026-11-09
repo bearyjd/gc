@@ -44,7 +44,8 @@ undocumented behavior into an explicit, regression-protected contract.
 
 ---
 
-### 2. CLI command-layer test coverage (cli.py is 0% tested beyond one helper)
+### 2. CLI command-layer test coverage (cli.py is 0% tested beyond one helper) — DONE
+> Completed: `tests/test_cli.py` now covers `_resolve_team_id`, `cmd_teams/schedule/summary/sync/token_refresh` and `main()` exit codes, fully mocked. Note: in headless mode a 401 ping falls through to the full login (exit 1 only if that login raises `RuntimeError`); tests pin that actual behavior.
 **Why:** `gc_cli/cli.py` wires `get_session()` → `GCClient` → output formatting → exit
 codes for every user-facing command (`teams`, `schedule`, `summary`, `sync`,
 `token-refresh`). None of `cmd_teams`, `cmd_schedule`, `cmd_summary`, `cmd_sync`,
@@ -91,7 +92,8 @@ but consider a one-line comment noting that).
 
 ---
 
-### 4. Offline reproduction path: schedule-fixture → client → sync pipeline test
+### 4. Offline reproduction path: schedule-fixture → client → sync pipeline test — DONE
+> Completed: `tests/test_integration_schedule_to_sync.py` (fixture -> `get_schedule` -> `sync_team`, dry-run and gog-mocked full cycle). Uses only the schedule shape.
 **Why:** `tests/e2e/test_sync_e2e.sh` is **not self-contained** — it requires a live
 GameChanger account (`GC_EMAIL`/`GC_PASSWORD`), a real Google Calendar
 (`GC_TEST_CALENDAR_ID`), `gog` installed and authenticated, and network access; its own
@@ -116,7 +118,8 @@ credentials — something the current suite cannot do.
 
 ---
 
-### 5. Capture real `/me/teams` and `/clips` response shapes; document the gap in CLAUDE.md
+### 5. Capture real `/me/teams` and `/clips` response shapes; document the gap in CLAUDE.md — PARTIAL
+> Docstrings in `client.py` now say schedule confirmed / teams+clips unconfirmed. Still OPEN: the live-account redacted captures (`*_real.json`) need a human.
 **Why:** Per `docs/superpowers/plans/2026-04-12-gc-calendar-sync.md` (Step 4.3) and the
 CHANGELOG, the **schedule** envelope shape (`{"event": {...}, "pregame_data": {...}}`) was
 confirmed against a real response at some point (docstring in `_normalize_event` states it
