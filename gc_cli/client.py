@@ -2,7 +2,10 @@
 GameChanger API client.
 
 Accepts an injected requests.Session (from session.py).
-Response parsing uses defensive fallbacks until real API shapes are confirmed.
+Response parsing uses defensive fallbacks.
+Confirmed against a real response: the /teams/{id}/schedule envelope
+({"event": {...}, "pregame_data": {...}}). UNCONFIRMED (guessed fallbacks, no real
+capture yet): the /me/teams and /clips response shapes.
 """
 
 import json
@@ -79,7 +82,10 @@ def _save_teams(teams: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def _normalize_team(raw: dict) -> dict:
-    """Normalize a raw team object to {id, name, sport, season}."""
+    """Normalize a raw team object to {id, name, sport, season}.
+
+    Shape UNCONFIRMED: no real /me/teams capture exists yet.
+    """
     season_year = raw.get("season_year", "")
     season_name = raw.get("season_name", "")
     if season_year or season_name:
@@ -165,7 +171,10 @@ def _normalize_event(raw: dict) -> dict:
 
 
 def _normalize_clip(raw: dict) -> dict:
-    """Normalize a raw clip to {id, title, url, event_id}."""
+    """Normalize a raw clip to {id, title, url, event_id}.
+
+    Shape UNCONFIRMED: no real /clips capture exists yet.
+    """
     return {
         "id": raw.get("id") or raw.get("clipId", ""),
         "title": raw.get("title") or raw.get("name", "Untitled"),
